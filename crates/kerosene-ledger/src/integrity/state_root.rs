@@ -10,7 +10,6 @@ use crate::state_machine::{ConsensusProfile, LedgerState, MembershipView};
 // Domain-separation constants (unique per field type, versioned)
 // ---------------------------------------------------------------------------
 
-const DOMAIN_VERSION: u64 = 1;
 const TAG_VERSION: &[u8] = b"KROOTv1:version";
 const TAG_ACCOUNTS: &[u8] = b"KROOTv1:accounts";
 const TAG_JOURNAL: &[u8] = b"KROOTv1:journal";
@@ -42,34 +41,6 @@ fn hash_with_domain(tag: &[u8], payload: &[u8]) -> [u8; 32] {
 
 fn encode_u64(v: u64) -> [u8; 8] {
     v.to_le_bytes()
-}
-
-fn encode_bool(b: bool) -> [u8; 1] {
-    [u8::from(b)]
-}
-
-fn encode_option_u64(v: Option<u64>) -> Vec<u8> {
-    match v {
-        Some(n) => {
-            let mut buf = vec![1u8];
-            buf.extend_from_slice(&n.to_le_bytes());
-            buf
-        }
-        None => vec![0u8],
-    }
-}
-
-fn encode_option_string(v: &Option<String>) -> Vec<u8> {
-    match v {
-        Some(s) => {
-            let bytes = s.as_bytes();
-            let mut buf = vec![1u8];
-            buf.extend_from_slice(&(bytes.len() as u64).to_le_bytes());
-            buf.extend_from_slice(bytes);
-            buf
-        }
-        None => vec![0u8],
-    }
 }
 
 fn encode_string(s: &str) -> Vec<u8> {

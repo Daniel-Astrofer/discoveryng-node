@@ -11,7 +11,8 @@ release must not be promoted until evidence exists for every gate below:
 - network partition, replay, fork and endpoint-spoofing exercises;
 - sustained discovery/membership load and resource-exhaustion test;
 - reproducible build, SBOM, provenance and signed release artifact;
-- pinned CometBFT compatibility after issue #2 is implemented.
+- explicit compatibility evidence for any future external consensus adapter;
+  CometBFT implementation remains outside the current Node boundary.
 
 CI covers formatting, production compilation, Clippy, unit tests and
 progressive bootstrap/security integration tests. External audit, penetration
