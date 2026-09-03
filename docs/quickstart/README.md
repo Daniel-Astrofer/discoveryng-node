@@ -1,3 +1,12 @@
+<!--
+Kerosene documentation metadata
+status: review-required
+audience: internal
+owner: node
+source_of_truth: node
+last_reviewed: 2026-09-03
+-->
+
 # Kerosene Node
 
 Rust runtime for Kerosene identity, Tor-only peer discovery and authenticated
@@ -38,11 +47,15 @@ ownership and is tracked separately in
 [issue #2](https://github.com/Daniel-Astrofer/kerosene-node/issues/2); this
 repository does not substitute a fake consensus engine.
 
+The container recipe is owned by `kerosene-deploy`; this repository supplies
+the source build context and `.dockerignore`, avoiding a second drifting
+Dockerfile.
+
 ## Run
 
 Production startup requires a v3 onion endpoint, Tor `socks5h`, a
 `GenesisTrustBundleV1`, a server certificate/key and a CA used to require client
-certificates. See [operations](docs/OPERATIONS.md) for the complete environment
+certificates. See [operations](../operations/OPERATIONS.md) for the complete environment
 contract and progressive bootstrap procedure.
 
 ```bash
@@ -59,13 +72,17 @@ cargo test --workspace --all-features
 ```
 
 Security assumptions and release gates are documented in
-[THREAT_MODEL.md](docs/THREAT_MODEL.md) and
-[PRODUCTION_GATES.md](docs/PRODUCTION_GATES.md).
+[THREAT_MODEL.md](../security/THREAT_MODEL.md) and
+[PRODUCTION_GATES.md](../operations/PRODUCTION_GATES.md).
 
 Compact documentation:
 
 - [English](docs/en/README.md)
 - [Português](docs/pt-BR/README.md)
+- [documentation portal](docs/README.md)
+- [Status](../STATUS.md)
+- [API catalog](../reference/API_CATALOG.md)
+- [Ledger ownership ADR](docs/decisions/ADR-0001-LEDGER-OWNERSHIP.md)
 - [English quickstart](docs/en/QUICKSTART.md)
 - [Início rápido em português](docs/pt-BR/QUICKSTART.md)
 
