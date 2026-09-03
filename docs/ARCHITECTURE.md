@@ -6,7 +6,22 @@
 2. **Discovery** finds onion endpoints but grants no authority.
 3. **Membership** verifies signed, hash-chained rosters.
 4. **Readiness** reports local/member/quorum/financial capability independently.
-5. **Authority** is only available after the required lifecycle and live quorum.
+5. **Readiness signal** is emitted only after the required lifecycle and live
+   membership quorum; financial authority remains outside Node.
+
+## Code boundaries
+
+The source tree mirrors those decisions. `kerosene-node/src/application` owns
+lifecycle, readiness and member workflows; `src/api` only maps HTTP requests;
+`src/bootstrap` reads environment configuration and wires Tor/mTLS. The
+consensus contract lives at `src/domain/consensus.rs` and intentionally has no
+CometBFT implementation dependency.
+
+The adjacent crates follow the same rule: identity, membership and sync are
+deterministic domain components, while discovery is an adapter. The ledger is
+partitioned into `domain`, `application`, `ports`, `adapters`, `consensus` and
+`integrity`. See [repository layout](REPOSITORY_LAYOUT.md) for the complete
+ownership map.
 
 `memberId = SHA-256(networkId || rootPublicKey)`. Network addresses are HTTPS
 v3 onion services; clearnet publication and local DNS service discovery are
@@ -81,9 +96,9 @@ Writes use a temporary file and atomic rename. These files contain public peer
 metadata, not Vault shares, macaroons, signing material or user data. The root
 identity key is stored separately with owner-only permissions.
 
-## Consensus boundary
+## External synchronization and consensus boundary
 
-The synchronization crate defines deterministic state-root verification and an
-adapter trait. CometBFT remains an external consensus process and its pinned
-compatibility and ABCI implementation belong to issue #2. Discovery and
-membership do not claim consensus finality.
+The synchronization crate exposes boundary traits for external state
+verification. It does not transfer ledger ownership or consensus finality to
+Node. CometBFT remains an external, deferred integration tracked separately;
+discovery and membership never claim consensus finality.

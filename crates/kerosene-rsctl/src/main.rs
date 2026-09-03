@@ -38,8 +38,6 @@ struct Cli {
     #[arg(long, global = true)]
     socks5h: Option<String>,
     #[arg(long, global = true)]
-    unix_socket: Option<PathBuf>,
-    #[arg(long, global = true)]
     request_id: Option<String>,
     #[arg(long, global = true)]
     verbose: bool,
@@ -260,18 +258,21 @@ async fn main() -> Result<()> {
         .socks5h
         .as_deref()
         .or_else(|| profile.as_ref().and_then(|value| value.socks5h.as_deref()));
-    let unix_socket = cli.unix_socket.as_deref().or_else(|| {
-        profile
-            .as_ref()
-            .and_then(|value| value.vault_socket.as_deref())
-    });
+    if profile
+        .as_ref()
+        .and_then(|value| value.vault_socket.as_ref())
+        .is_some()
+    {
+        bail!(
+            "Unix-socket administration was removed; use the Vault HTTPS mTLS endpoint through Tor"
+        );
+    }
+    if identity_pem.is_none() || ca.is_none() || socks5h.is_none() {
+        bail!("operator identity, CA and socks5h Tor proxy are required");
+    }
     let request_id = request_id(cli.request_id.clone());
     let network_client = admin_client(cli.timeout, identity_pem, ca, socks5h, None)?;
-    let vault_client = if let Some(socket) = unix_socket {
-        admin_client(cli.timeout, None, None, None, Some(socket))?
-    } else {
-        network_client.clone()
-    };
+    let vault_client = network_client.clone();
 
     let value = match cli.command {
         Command::Node { command } => {
@@ -306,17 +307,13 @@ async fn main() -> Result<()> {
             }
         }
         Command::Vault { command } => {
-            let endpoint = if unix_socket.is_some() {
-                "http://localhost".to_string()
-            } else {
-                endpoint(
-                    cli.endpoint.as_deref(),
-                    "KEROSENE_VAULT_ENDPOINT",
-                    profile
-                        .as_ref()
-                        .and_then(|value| value.vault_endpoint.as_deref()),
-                )?
-            };
+            let endpoint = endpoint(
+                cli.endpoint.as_deref(),
+                "KEROSENE_VAULT_ENDPOINT",
+                profile
+                    .as_ref()
+                    .and_then(|value| value.vault_endpoint.as_deref()),
+            )?;
             match command {
                 VaultCommand::Status => {
                     get_json(&vault_client, &endpoint, "/v1/admin/status", &request_id).await?
@@ -368,23 +365,18 @@ async fn main() -> Result<()> {
                 &request_id,
             )
             .await?;
-            let vault = if unix_socket.is_some()
-                || profile
-                    .as_ref()
-                    .and_then(|value| value.vault_endpoint.as_ref())
-                    .is_some()
+            let vault = if profile
+                .as_ref()
+                .and_then(|value| value.vault_endpoint.as_ref())
+                .is_some()
             {
-                let vault_endpoint = if unix_socket.is_some() {
-                    "http://localhost".to_string()
-                } else {
-                    endpoint(
-                        None,
-                        "KEROSENE_VAULT_ENDPOINT",
-                        profile
-                            .as_ref()
-                            .and_then(|value| value.vault_endpoint.as_deref()),
-                    )?
-                };
+                let vault_endpoint = endpoint(
+                    None,
+                    "KEROSENE_VAULT_ENDPOINT",
+                    profile
+                        .as_ref()
+                        .and_then(|value| value.vault_endpoint.as_deref()),
+                )?;
                 Some(
                     get_json(
                         &vault_client,
@@ -531,28 +523,22 @@ fn admin_client(
     unix_socket: Option<&Path>,
 ) -> Result<reqwest::Client> {
     let mut builder = reqwest::Client::builder().timeout(Duration::from_secs(timeout));
-    if unix_socket.is_some() && (identity_pem.is_some() || ca.is_some() || socks5h.is_some()) {
-        bail!("Unix socket cannot be combined with mTLS or proxy options");
+    if unix_socket.is_some() {
+        bail!("Unix-socket administration was removed");
     }
-    if identity_pem.is_some() != ca.is_some() {
-        bail!("--identity-pem and --ca must be provided together");
+    let (identity_pem, ca, proxy) = match (identity_pem, ca, socks5h) {
+        (Some(identity_pem), Some(ca), Some(proxy)) => (identity_pem, ca, proxy),
+        _ => bail!("operator identity, CA and socks5h Tor proxy are required"),
+    };
+    if !proxy.starts_with("socks5h://") {
+        bail!("proxy must use socks5h:// so DNS is resolved through Tor");
     }
-    if let (Some(identity_pem), Some(ca)) = (identity_pem, ca) {
-        ensure_private_file(identity_pem)?;
-        builder = builder
-            .https_only(true)
-            .identity(reqwest::Identity::from_pem(&fs::read(identity_pem)?)?)
-            .add_root_certificate(reqwest::Certificate::from_pem(&fs::read(ca)?)?);
-    }
-    if let Some(proxy) = socks5h {
-        if !proxy.starts_with("socks5h://") {
-            bail!("proxy must use socks5h:// so DNS is resolved through Tor");
-        }
-        builder = builder.proxy(reqwest::Proxy::all(proxy)?);
-    }
-    if let Some(socket) = unix_socket {
-        builder = builder.unix_socket(socket);
-    }
+    ensure_private_file(identity_pem)?;
+    builder = builder
+        .https_only(true)
+        .identity(reqwest::Identity::from_pem(&fs::read(identity_pem)?)?)
+        .add_root_certificate(reqwest::Certificate::from_pem(&fs::read(ca)?)?)
+        .proxy(reqwest::Proxy::all(proxy)?);
     Ok(builder.build()?)
 }
 
@@ -573,11 +559,16 @@ async fn get_json(
 }
 
 fn endpoint(cli: Option<&str>, env_name: &str, profile: Option<&str>) -> Result<String> {
-    cli.map(str::to_owned)
+    let value = cli
+        .map(str::to_owned)
         .or_else(|| std::env::var(env_name).ok())
         .or_else(|| profile.map(str::to_owned))
         .filter(|value| !value.trim().is_empty())
-        .ok_or_else(|| anyhow!("--endpoint, {env_name}, or a profile endpoint is required"))
+        .ok_or_else(|| anyhow!("--endpoint, {env_name}, or a profile endpoint is required"))?;
+    if !value.starts_with("https://") {
+        bail!("operator endpoints must use https:// mTLS");
+    }
+    Ok(value)
 }
 
 fn load_profile(name: Option<&str>) -> Result<Option<Profile>> {
