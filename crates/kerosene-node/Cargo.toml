@@ -28,6 +28,7 @@ kerosene-membership = { path = "../kerosene-membership" }
 kerosene-release-observer = { path = "../kerosene-release-observer" }
 kerosene-sync = { path = "../kerosene-sync" }
 parking_lot.workspace = true
+reqwest.workspace = true
 rustls.workspace = true
 serde.workspace = true
 serde_json.workspace = true

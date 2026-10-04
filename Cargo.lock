@@ -1107,6 +1107,7 @@ dependencies = [
  "kerosene-release-observer",
  "kerosene-sync",
  "parking_lot 0.12.5",
+ "reqwest",
  "rustls",
  "serde",
  "serde_json",
