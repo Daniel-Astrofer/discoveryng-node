@@ -1,17 +1,17 @@
-use crate::certificate::CertifiedSnapshot;
-use crate::error::LedgerError;
-use crate::membership::{
-    validate_role_transition, AdmissionFlow, InMemoryMembershipStore, MembershipGate,
-    MembershipStore, NodeMembership, NodeRole, VotingGate,
-};
-use crate::replication::{
+use crate::application::replication::{
     can_vote, execute_catch_up, recover_divergence, CatchUpPlan, CatchUpStrategy, DivergenceReport,
     DivergenceResult, ReplicationStatus, SyncStatus, MAX_REPLAY_COMMANDS,
 };
-use crate::snapshot::{InMemorySnapshotStore, SnapshotStore};
-use crate::state_machine::{
+use crate::consensus::certificate::CertifiedSnapshot;
+use crate::consensus::membership::{
+    validate_role_transition, AdmissionFlow, InMemoryMembershipStore, MembershipGate,
+    MembershipStore, NodeMembership, NodeRole, VotingGate,
+};
+use crate::domain::error::LedgerError;
+use crate::domain::state_machine::{
     LedgerCommand, LedgerCommandType, LedgerState, MembershipView, StateMachine,
 };
+use crate::ports::snapshot::{InMemorySnapshotStore, SnapshotStore};
 use crate::tests::helpers::make_signed_qc;
 
 // ---------------------------------------------------------------------------
@@ -66,18 +66,18 @@ fn make_snapshot(sequence: u64, state: &LedgerState) -> CertifiedSnapshot {
         sequence,
         "cmd-hash",
         "prev-root",
-        &crate::state_root::compute_state_root(state),
+        &crate::integrity::state_root::compute_state_root(state),
         "node-1",
     );
     let state_bytes = serde_json::to_vec(state).unwrap();
-    let state_root = crate::state_root::compute_state_root(state);
+    let state_root = crate::integrity::state_root::compute_state_root(state);
     CertifiedSnapshot {
         cluster_id: "cluster-1".into(),
         epoch: 1,
         sequence,
         state_bytes,
         state_root,
-        membership_hash: crate::state_root::compute_membership_hash(&state.membership),
+        membership_hash: crate::integrity::state_root::compute_membership_hash(&state.membership),
         constitution_hash: "const-hash".into(),
         policy_hash: "policy-hash".into(),
         ledger_totals_hash: "totals-hash".into(),
@@ -712,7 +712,7 @@ impl Default for TestSyncManager {
 }
 
 #[async_trait::async_trait]
-impl crate::replication::SyncManager for TestSyncManager {
+impl crate::application::replication::SyncManager for TestSyncManager {
     async fn status(&self) -> Result<ReplicationStatus, LedgerError> {
         let st = self.status.lock().unwrap();
         Ok(st.clone())

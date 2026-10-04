@@ -3,7 +3,7 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use crate::error::LedgerError;
+use crate::domain::error::LedgerError;
 
 // ---------------------------------------------------------------------------
 // NonceChecker trait (async)
@@ -70,7 +70,7 @@ impl NonceChecker for InMemoryNonceChecker {
 
 /// Sync wrapper for `InMemoryNonceChecker` that can be used by
 /// `VaultAuthorizationVerifier` for synchronous verification.
-impl crate::settlement::NonceChecker for InMemoryNonceChecker {
+impl crate::domain::settlement::NonceChecker for InMemoryNonceChecker {
     fn is_consumed_sync(&self, nonce: &str) -> bool {
         let inner = self.consumed.lock().unwrap();
         inner.contains(nonce)
@@ -85,7 +85,7 @@ impl crate::settlement::NonceChecker for InMemoryNonceChecker {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::settlement::NonceChecker as SyncNonceChecker;
+    use crate::domain::settlement::NonceChecker as SyncNonceChecker;
 
     #[tokio::test]
     async fn fresh_nonce_is_not_consumed() {

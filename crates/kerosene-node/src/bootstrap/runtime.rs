@@ -23,29 +23,57 @@ use rustls::server::WebPkiClientVerifier;
 use rustls::{RootCertStore, ServerConfig};
 use tracing::{info, warn};
 
+/// Validated configuration loaded from node runtime environment variables.
 struct Config {
+    /// Network namespace to which identity and membership are bound.
     network_id: String,
+    /// Membership plane operated by this process.
     plane: DiscoveryPlane,
+    /// Local TCP address on which the HTTP server listens.
     listen_addr: SocketAddr,
+    /// Public HTTPS onion endpoint advertised to peers.
     onion_endpoint: String,
+    /// File containing the local Ed25519 identity seed.
     identity_key: PathBuf,
+    /// Genesis trust bundle used to seed membership verification.
     genesis_bundle: PathBuf,
+    /// Directory containing durable peer, manifest, and lifecycle data.
     peer_store: PathBuf,
+    /// Server certificate presented by the HTTP listener.
     tls_cert: PathBuf,
+    /// Private key corresponding to the server certificate.
     tls_key: PathBuf,
+    /// CA bundle used to validate inbound mTLS client certificates.
     tls_client_ca: PathBuf,
+    /// Optional PEM identity used for outbound authenticated peer connections.
     tls_client_identity: Option<PathBuf>,
+    /// SOCKS proxy URL; remote DNS resolution is required for onion hosts.
     socks_proxy: String,
+    /// Configured genesis peer endpoints.
     genesis_endpoints: Vec<EndpointRecord>,
+    /// Optional discovery mirror endpoints.
     mirrors: Vec<EndpointRecord>,
+    /// Whether this node observes manifests without initiating peer handshakes.
     observer: bool,
+    /// Lifetime of issued peer challenges in milliseconds.
     challenge_ttl_ms: u64,
+    /// Maximum peer last-seen age counted as live, in milliseconds.
     peer_live_window_ms: u64,
+    /// Delay between discovery rounds in milliseconds.
     discovery_interval_ms: u64,
+    /// Directory for the persistent ledger database.
     ledger_db_path: PathBuf,
 }
 
 impl Config {
+    /// Reads required settings, applies defaults, and validates security-sensitive values.
+    ///
+    /// This rejects non-`socks5h` Tor proxies and clearnet publication, validates
+    /// onion endpoints, and parses endpoint sources before returning a config.
+    ///
+    /// # Errors
+    /// Returns an error for missing required variables, invalid values, malformed
+    /// endpoints, or forbidden clearnet settings.
     fn from_env() -> anyhow::Result<Self> {
         let network_id = required("KEROSENE_NETWORK_ID")?;
         let plane = match required("KEROSENE_DISCOVERY_PLANE")?.as_str() {
@@ -102,6 +130,15 @@ impl Config {
     }
 }
 
+/// Initializes persistent state, discovery transports, TLS, and serves the node API.
+///
+/// Startup restores genesis membership and identity before accepting requests.
+/// When discovery sources exist, it also requires outbound mTLS credentials and
+/// runs periodic peer discovery through Tor.
+///
+/// # Errors
+/// Returns errors from configuration, trust/identity loading, storage setup,
+/// TLS construction, or the HTTP server.
 pub async fn run() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -119,7 +156,8 @@ pub async fn run() -> anyhow::Result<()> {
         return Err(anyhow!("GenesisTrustBundle network mismatch"));
     }
 
-    // Initialize persistent ledger database
+    // Validate accessibility and schema readiness of persistent ledger database at startup
+    // (full consensus and ledger state machine wiring is deferred pending an accepted ADR).
     info!(
         path = %config.ledger_db_path.display(),
         "initializing persistent ledger database"
@@ -143,8 +181,7 @@ pub async fn run() -> anyhow::Result<()> {
         LifecycleStore::new(config.peer_store.join("lifecycle.db")),
         config.challenge_ttl_ms,
         config.peer_live_window_ms,
-    )
-    .map_err(|error| anyhow!(error))?;
+    )?;
 
     info!(
         "ledger stores initialized: nonce, accounts, reservations, idempotency, utxos, withdrawals, snapshots, membership"
@@ -191,6 +228,7 @@ pub async fn run() -> anyhow::Result<()> {
         .context("serve discovery API")
 }
 
+/// Starts a background task that periodically discovers, authenticates, and records peers.
 #[allow(clippy::too_many_arguments)]
 fn spawn_discovery(
     service: NodeService,
@@ -227,6 +265,12 @@ fn spawn_discovery(
             };
             for candidate in candidates {
                 let endpoint = &candidate.endpoint;
+                // Membership manifests and persisted discovery sources include the
+                // local member. A self-handshake is intentionally rejected by the
+                // protocol, so never send it over Tor or report it as a peer failure.
+                if endpoint == &local_endpoint {
+                    continue;
+                }
                 let result = if observer {
                     client
                         .fetch_manifest(endpoint)
@@ -256,7 +300,9 @@ fn spawn_discovery(
                                 .map_err(|error| error.to_string());
                             if observed.is_ok() {
                                 if let Ok(manifest) = client.fetch_manifest(endpoint).await {
-                                    let _ = service.accept_membership(manifest);
+                                    if let Err(error) = service.accept_membership(manifest) {
+                                        warn!(%endpoint, %error, "failed to accept fetched manifest");
+                                    }
                                 }
                             }
                             observed
@@ -273,6 +319,10 @@ fn spawn_discovery(
     });
 }
 
+/// Builds a server TLS configuration requiring client certificates from the configured CA.
+///
+/// # Errors
+/// Returns errors for unreadable or malformed PEM files and invalid TLS configuration.
 fn tls_config(
     cert_path: &PathBuf,
     key_path: &PathBuf,
@@ -301,6 +351,10 @@ fn tls_config(
     ))
 }
 
+/// Reads a required non-empty environment variable.
+///
+/// # Errors
+/// Returns an error naming `name` when the variable is unset or blank.
 fn required(name: &str) -> anyhow::Result<String> {
     env::var(name)
         .ok()
@@ -308,6 +362,7 @@ fn required(name: &str) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow!("{name} is required"))
 }
 
+/// Reads a path-valued environment variable or returns its default path.
 fn path(name: &str, default: &str) -> PathBuf {
     env::var(name)
         .ok()
@@ -315,16 +370,26 @@ fn path(name: &str, default: &str) -> PathBuf {
         .map_or_else(|| PathBuf::from(default), PathBuf::from)
 }
 
+/// Parses a numeric environment variable, using `default` when it is unset.
+///
+/// # Errors
+/// Returns an error identifying `name` when the configured value is not an integer.
 fn integer(name: &str, default: u64) -> anyhow::Result<u64> {
     env::var(name)
         .map(|value| value.parse().with_context(|| format!("{name} is invalid")))
         .unwrap_or(Ok(default))
 }
 
+/// Parses a conventional truthy environment value; unset or other values are false.
 fn env_flag(name: &str) -> bool {
     env::var(name).is_ok_and(|value| matches!(value.trim(), "1" | "true" | "TRUE" | "yes" | "YES"))
 }
 
+/// Resolves the advertised onion endpoint directly or waits for Tor's hostname file.
+///
+/// # Errors
+/// Returns errors for missing configuration, invalid port/endpoint, or a hostname
+/// file that remains unavailable until its configured timeout.
 fn onion_endpoint() -> anyhow::Result<String> {
     if let Ok(endpoint) = required("KEROSENE_NODE_ONION_ENDPOINT") {
         return Ok(endpoint);

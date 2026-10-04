@@ -4,7 +4,7 @@
 // Provides consistent key generation and QC signing for all test modules.
 // ---------------------------------------------------------------------------
 
-use crate::certificate::QuorumCertificate;
+use crate::consensus::certificate::QuorumCertificate;
 
 /// Generate a real Ed25519 keypair for testing.
 pub fn test_keypair() -> (ed25519_dalek::SigningKey, ed25519_dalek::VerifyingKey) {
@@ -22,6 +22,7 @@ pub fn sign_message(signing_key: &ed25519_dalek::SigningKey, message: &[u8]) -> 
 
 /// Create a QuorumCertificate whose embedded Ed25519 signature is valid against
 /// the QC's own `signing_message()`. Returns the QC and the hex-encoded public key.
+#[allow(clippy::too_many_arguments)]
 pub fn make_signed_qc(
     cluster_id: &str,
     epoch: u64,

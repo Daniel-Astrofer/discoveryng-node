@@ -1,5 +1,3 @@
-use std::fs::{self, OpenOptions};
-use std::io::{Read, Write};
 use std::path::Path;
 
 use ed25519_dalek::{Signature, Signer, SigningKey, Verifier, VerifyingKey};
@@ -8,22 +6,31 @@ use kerosene_contracts::{
 };
 use rand::rngs::OsRng;
 use thiserror::Error;
-use zeroize::Zeroize;
 
 #[derive(Debug, Error)]
+/// Failures raised while loading identities or authenticating signed peer messages.
 pub enum IdentityError {
+    /// Filesystem operation on the identity key failed.
     #[error("identity key IO failed: {0}")]
     Io(#[from] std::io::Error),
+    /// Secret material was not exactly 32 bytes of lowercase hexadecimal text.
     #[error("identity key must contain exactly 32 bytes encoded as lowercase hex")]
     InvalidSecret,
+    /// Peer public-key encoding or curve point was invalid.
     #[error("peer public key is invalid")]
     InvalidPublicKey,
+    /// Peer signature encoding or signature verification was invalid.
     #[error("peer signature is invalid")]
     InvalidSignature,
+    /// Network-bound member ID did not correspond to the supplied root key.
     #[error("peer member ID does not match its network-bound root key")]
     MemberIdMismatch,
 }
 
+/// Long-lived node identity scoped to one network and discovery plane.
+///
+/// The signing key remains private to this object. Peer messages expose only
+/// its public key and a signature over the canonical contract representation.
 pub struct NodeIdentity {
     network_id: String,
     plane: DiscoveryPlane,
@@ -32,10 +39,18 @@ pub struct NodeIdentity {
 }
 
 impl NodeIdentity {
+    /// Generates a fresh operating-system-random Ed25519 identity.
+    ///
+    /// The returned identity is not persisted; use [`NodeIdentity::load_or_create`] when it
+    /// must survive process restarts.
     pub fn generate(network_id: impl Into<String>, plane: DiscoveryPlane) -> Self {
         Self::from_signing_key(network_id.into(), plane, SigningKey::generate(&mut OsRng))
     }
 
+    /// Constructs an identity from a 32-byte Ed25519 secret seed.
+    ///
+    /// Callers are responsible for securely sourcing and handling `secret`;
+    /// the seed is not persisted by this method.
     pub fn from_secret(
         network_id: impl Into<String>,
         plane: DiscoveryPlane,
@@ -44,69 +59,46 @@ impl NodeIdentity {
         Self::from_signing_key(network_id.into(), plane, SigningKey::from_bytes(&secret))
     }
 
+    /// Loads an existing identity file or creates it atomically if absent.
+    ///
+    /// Delegates to [`crate::adapters::FileIdentityStore::load_or_create`].
     pub fn load_or_create(
         path: &Path,
         network_id: impl Into<String>,
         plane: DiscoveryPlane,
     ) -> Result<Self, IdentityError> {
-        let network_id = network_id.into();
-        match OpenOptions::new().read(true).open(path) {
-            Ok(mut file) => {
-                let mut encoded = String::new();
-                file.read_to_string(&mut encoded)?;
-                let mut bytes =
-                    hex::decode(encoded.trim()).map_err(|_| IdentityError::InvalidSecret)?;
-                if bytes.len() != 32 {
-                    bytes.zeroize();
-                    return Err(IdentityError::InvalidSecret);
-                }
-                let mut secret = [0_u8; 32];
-                secret.copy_from_slice(&bytes);
-                bytes.zeroize();
-                let identity = Self::from_secret(network_id, plane, secret);
-                secret.zeroize();
-                Ok(identity)
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                if let Some(parent) = path.parent() {
-                    fs::create_dir_all(parent)?;
-                }
-                let identity = Self::generate(network_id, plane);
-                let mut options = OpenOptions::new();
-                options.write(true).create_new(true);
-                #[cfg(unix)]
-                {
-                    use std::os::unix::fs::OpenOptionsExt;
-                    options.mode(0o600);
-                }
-                let mut file = options.open(path)?;
-                let mut encoded = hex::encode(identity.signing_key.to_bytes());
-                file.write_all(encoded.as_bytes())?;
-                file.write_all(b"\n")?;
-                file.sync_all()?;
-                encoded.zeroize();
-                Ok(identity)
-            }
-            Err(error) => Err(error.into()),
-        }
+        crate::adapters::FileIdentityStore::load_or_create(path, network_id, plane)
     }
 
+    /// Exposes raw secret bytes for persistent storage adapters within the crate.
+    pub(crate) fn secret_bytes(&self) -> [u8; 32] {
+        self.signing_key.to_bytes()
+    }
+
+    /// Returns the network-bound identifier derived from the root public key.
     pub fn member_id(&self) -> &str {
         &self.member_id
     }
 
+    /// Returns the Ed25519 root public key as lowercase hexadecimal text.
     pub fn root_public_key_hex(&self) -> String {
         hex::encode(self.signing_key.verifying_key().as_bytes())
     }
 
+    /// Returns the network namespace to which this identity belongs.
     pub fn network_id(&self) -> &str {
         &self.network_id
     }
 
+    /// Returns the discovery plane this identity is authorized to represent.
     pub fn plane(&self) -> DiscoveryPlane {
         self.plane
     }
 
+    /// Creates and signs a canonical peer hello for this identity's scope.
+    ///
+    /// The challenge and endpoint are included in the signed contract bytes,
+    /// binding authentication to the current handshake and advertised address.
     pub fn sign_hello(
         &self,
         challenge: impl Into<String>,
@@ -128,6 +120,10 @@ impl NodeIdentity {
         hello
     }
 
+    /// Verifies a peer hello's key encoding, member ID, and canonical signature.
+    ///
+    /// This check proves possession of the advertised key; callers must still
+    /// validate network/plane scope, freshness, challenge use, and membership.
     pub fn verify_hello_signature(hello: &PeerHelloV1) -> Result<(), IdentityError> {
         let public_bytes = decode_array::<32>(&hello.root_public_key)
             .map_err(|_| IdentityError::InvalidPublicKey)?;
@@ -144,6 +140,7 @@ impl NodeIdentity {
             .map_err(|_| IdentityError::InvalidSignature)
     }
 
+    /// Derives this identity's member ID and stores its signing key and scope.
     fn from_signing_key(
         network_id: String,
         plane: DiscoveryPlane,
@@ -159,6 +156,7 @@ impl NodeIdentity {
     }
 }
 
+/// Decodes hexadecimal bytes and requires exactly `N` output bytes.
 fn decode_array<const N: usize>(value: &str) -> Result<[u8; N], hex::FromHexError> {
     let bytes = hex::decode(value)?;
     bytes

@@ -4,8 +4,8 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::error::LedgerError;
-use crate::replication::ReplicationStatus;
+use crate::application::replication::ReplicationStatus;
+use crate::domain::error::LedgerError;
 
 // ---------------------------------------------------------------------------
 // NodeRole
@@ -174,14 +174,14 @@ impl MembershipStore for InMemoryMembershipStore {
 pub fn validate_role_transition(current: NodeRole, target: NodeRole) -> Result<(), LedgerError> {
     use NodeRole::*;
 
-    let valid = match (current, target) {
-        (Untrusted, Observer) => true,
-        (Observer, Learner) => true,
-        (Learner, Voter) => true,
-        (Voter, Observer) => true,
-        (_, Untrusted) => true,
-        _ => false,
-    };
+    let valid = matches!(
+        (current, target),
+        (Untrusted, Observer)
+            | (Observer, Learner)
+            | (Learner, Voter)
+            | (Voter, Observer)
+            | (_, Untrusted)
+    );
 
     if valid {
         Ok(())
@@ -272,7 +272,7 @@ impl VotingGate {
     pub fn can_vote(&self) -> bool {
         self.membership.role == NodeRole::Voter
             && self.sync_status.applied_sequence == self.sync_status.committed_sequence
-            && self.sync_status.sync_status == crate::replication::SyncStatus::Healthy
+            && self.sync_status.sync_status == crate::application::replication::SyncStatus::Healthy
     }
 
     /// Returns `true` if the node is allowed to propose new commands.
@@ -299,7 +299,7 @@ impl VotingGate {
             ));
         }
 
-        if self.sync_status.sync_status != crate::replication::SyncStatus::Healthy {
+        if self.sync_status.sync_status != crate::application::replication::SyncStatus::Healthy {
             reasons.push(format!("sync status is {:?}", self.sync_status.sync_status));
         }
 
@@ -310,7 +310,7 @@ impl VotingGate {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::replication::SyncStatus;
+    use crate::application::replication::SyncStatus;
 
     // -----------------------------------------------------------------------
     // NodeRole transition tests

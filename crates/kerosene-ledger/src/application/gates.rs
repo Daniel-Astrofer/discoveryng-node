@@ -1,9 +1,9 @@
 use serde::{Deserialize, Serialize};
 
-use crate::metrics::LedgerMetrics;
-use crate::reconciliation::ReconciliationReport;
-use crate::replication::{ReplicationStatus, SyncStatus};
-use crate::state_machine::MembershipView;
+use crate::application::metrics::LedgerMetrics;
+use crate::application::reconciliation::ReconciliationReport;
+use crate::application::replication::{ReplicationStatus, SyncStatus};
+use crate::domain::state_machine::MembershipView;
 
 // ---------------------------------------------------------------------------
 // GateResult
@@ -148,7 +148,7 @@ impl ProductionGates {
         }
 
         // Reconciliation
-        use crate::reconciliation::ReconciliationStatus::*;
+        use crate::application::reconciliation::ReconciliationStatus::*;
         match report.status {
             Balanced | Warning | Surplus => { /* allowed from financial safety perspective */ }
             Deficit => {
@@ -345,9 +345,9 @@ impl ProductionGates {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::reconciliation::ReconciliationEngine;
-    use crate::replication::ReplicationStatus;
-    use crate::state_machine::{ConsensusProfile, LedgerState, MembershipView};
+    use crate::application::reconciliation::ReconciliationEngine;
+    use crate::application::replication::ReplicationStatus;
+    use crate::domain::state_machine::{ConsensusProfile, LedgerState, MembershipView};
 
     fn healthy_status() -> ReplicationStatus {
         ReplicationStatus {
@@ -399,7 +399,7 @@ mod tests {
     fn withdrawals_blocked_on_deficit() {
         let metrics = default_metrics();
         let mut state = LedgerState::empty(test_membership());
-        let mut acc = crate::account_state::AccountState::new("user-1");
+        let mut acc = crate::domain::account_state::AccountState::new("user-1");
         acc.available_sats = 100_000;
         state.accounts.push(acc);
         let report = ReconciliationEngine::reconcile(&state, "tip", true);
@@ -603,7 +603,7 @@ mod tests {
     fn degraded_mode_when_withdrawals_blocked() {
         let metrics = default_metrics();
         let mut state = LedgerState::empty(test_membership());
-        let mut acc = crate::account_state::AccountState::new("user-1");
+        let mut acc = crate::domain::account_state::AccountState::new("user-1");
         acc.available_sats = 100_000;
         state.accounts.push(acc);
         let report = ReconciliationEngine::reconcile(&state, "tip", true);

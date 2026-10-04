@@ -1,10 +1,9 @@
-//! Identity domain facade.
+//! Identity domain and persistence facade.
 //!
-//! Key persistence is kept beside the identity model but isolated from the
-//! discovery, membership and node runtime layers.
-pub mod domain {
-    mod identity;
-    pub use identity::*;
-}
+//! Key persistence is kept in adapters while the pure identity model and
+//! crypto verification remain in domain.
+pub mod adapters;
+pub mod domain;
 
+pub use adapters::*;
 pub use domain::*;

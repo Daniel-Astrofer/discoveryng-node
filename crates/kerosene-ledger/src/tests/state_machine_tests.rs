@@ -22,6 +22,7 @@ fn default_qc() -> QuorumCertificate {
     make_signed_qc("cluster-1", 1, 0, 42, "hash", "prev", "result", "node-1").0
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_qc(
     cluster_id: &str,
     epoch: u64,

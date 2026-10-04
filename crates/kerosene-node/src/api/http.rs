@@ -8,7 +8,7 @@ use kerosene_contracts::{canonical_hash, MembershipManifestV1, PeerHelloV1};
 use kerosene_discovery::{ChallengeResponse, HelloExchangeRequest};
 use serde::Serialize;
 
-use crate::{now_epoch_ms, NodeService, Readiness};
+use crate::{now_epoch_ms, NodeService, NodeServiceError, Readiness};
 
 #[derive(Debug, Serialize)]
 struct ErrorBody {
@@ -115,8 +115,12 @@ async fn accept_manifest(
         .accept_membership(manifest)
         .map(|()| Json(serde_json::json!({"accepted": true, "manifest_hash": hash})))
         .map_err(|error| {
+            let status = match error {
+                NodeServiceError::Membership(_) => StatusCode::UNPROCESSABLE_ENTITY,
+                _ => StatusCode::INTERNAL_SERVER_ERROR,
+            };
             (
-                StatusCode::UNPROCESSABLE_ENTITY,
+                status,
                 Json(ErrorBody {
                     error: error.to_string(),
                 }),

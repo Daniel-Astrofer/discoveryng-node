@@ -1,9 +1,9 @@
-use crate::invariants::{
+use crate::domain::invariants::{
     check_available_non_negative, check_no_balance_overflow,
     check_pending_outgoing_not_exceed_available, check_reserved_not_exceed_available,
     check_spendable_consistency, check_state_version_monotonic,
 };
-use crate::wallet::BalanceView;
+use crate::domain::wallet::BalanceView;
 
 fn valid_view() -> BalanceView {
     BalanceView {

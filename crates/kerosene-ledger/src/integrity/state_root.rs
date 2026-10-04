@@ -1,10 +1,10 @@
 use sha2::{Digest, Sha256};
 
-use crate::account_state::AccountState;
-use crate::chain::compute_utxo_root;
-use crate::double_entry::JournalEntry;
-use crate::reservation::Reservation;
-use crate::state_machine::{ConsensusProfile, LedgerState, MembershipView};
+use crate::consensus::chain::compute_utxo_root;
+use crate::domain::account_state::AccountState;
+use crate::domain::double_entry::JournalEntry;
+use crate::domain::reservation::Reservation;
+use crate::domain::state_machine::{ConsensusProfile, LedgerState, MembershipView};
 
 // ---------------------------------------------------------------------------
 // Domain-separation constants (unique per field type, versioned)
@@ -94,11 +94,11 @@ fn hash_reservation(r: &Reservation) -> [u8; 32] {
     buf.extend_from_slice(&encode_u64(r.committed_sequence));
     // ReservationState as stable u8 discriminator
     let state_code: u8 = match r.state {
-        crate::reservation::ReservationState::Prepared => 0,
-        crate::reservation::ReservationState::Committed => 1,
-        crate::reservation::ReservationState::Consumed => 2,
-        crate::reservation::ReservationState::Released => 3,
-        crate::reservation::ReservationState::Expired => 4,
+        crate::domain::reservation::ReservationState::Prepared => 0,
+        crate::domain::reservation::ReservationState::Committed => 1,
+        crate::domain::reservation::ReservationState::Consumed => 2,
+        crate::domain::reservation::ReservationState::Released => 3,
+        crate::domain::reservation::ReservationState::Expired => 4,
     };
     buf.push(state_code);
     buf.extend_from_slice(r.account_id.as_bytes());
@@ -178,7 +178,7 @@ pub fn compute_state_root(state: &LedgerState) -> String {
     // 1. Version (binary)
     hasher.update(TAG_VERSION);
     hasher.update(b":");
-    hasher.update(&state.version.to_le_bytes());
+    hasher.update(state.version.to_le_bytes());
 
     // 2. Accounts (sorted by account_id, each hashed with domain separation)
     let accounts_hash = hash_sorted_items(&state.accounts, TAG_ACCOUNTS, hash_account);
@@ -258,7 +258,7 @@ pub fn compute_membership_hash(membership: &MembershipView) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state_machine::{ConsensusProfile, LedgerState, MembershipView};
+    use crate::domain::state_machine::{ConsensusProfile, LedgerState, MembershipView};
 
     fn empty_state() -> LedgerState {
         LedgerState::empty(MembershipView::single_node("cluster-1", "node-1"))

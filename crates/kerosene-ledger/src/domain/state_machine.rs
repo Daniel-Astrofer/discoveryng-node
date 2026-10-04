@@ -1,14 +1,14 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::account_state::AccountState;
-use crate::chain::{
+use crate::consensus::chain::{
     DetectUtxoPayload, OnchainState, OutPoint, ReorgHandler, ReorgPayload, UtxoEntry,
     UtxoTransitionGate,
 };
-use crate::double_entry::JournalEntry;
-use crate::error::LedgerError;
-use crate::reservation::Reservation;
+use crate::domain::account_state::AccountState;
+use crate::domain::double_entry::JournalEntry;
+use crate::domain::error::LedgerError;
+use crate::domain::reservation::Reservation;
 
 // ---------------------------------------------------------------------------
 // LedgerCommandType — all operations the state machine can process
@@ -21,28 +21,51 @@ use crate::reservation::Reservation;
 /// requires updating both `validate` and `apply`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum LedgerCommandType {
+    /// Increase a user's internal available balance.
     CreditInternalBalance,
+    /// Decrease a user's internal available balance.
     DebitInternalBalance,
+    /// Move funds from available to reserved balance.
     ReserveBalance,
+    /// Return reserved funds to the available balance.
     ReleaseReservation,
+    /// Atomically transfer funds between internal accounts.
     CommitInternalTransfer,
+    /// Add a newly observed chain output to tracked UTXO state.
     DetectUtxo,
+    /// Advance an observed UTXO after the required chain confirmations.
     ConfirmUtxo,
+    /// Make a confirmed UTXO eligible for spending.
     MarkUtxoSpendable,
+    /// Hold a spendable UTXO for a withdrawal.
     ReserveUtxo,
+    /// Release a UTXO hold after a withdrawal is cancelled or fails.
     ReleaseUtxo,
+    /// Mark a UTXO as consumed by a confirmed spend.
     MarkUtxoSpent,
+    /// Create a withdrawal and reserve its funding inputs.
     PrepareWithdrawal,
+    /// Record policy authorization for a prepared withdrawal.
     AuthorizeWithdrawal,
+    /// Record that an authorized withdrawal was broadcast.
     BroadcastWithdrawal,
+    /// Confirm a broadcast withdrawal in observed chain state.
     ConfirmWithdrawal,
+    /// Mark a withdrawal as failed and release eligible reservations.
     FailWithdrawal,
+    /// Apply a chain reorganization to affected UTXOs and withdrawals.
     ApplyChainReorganization,
+    /// Consume a one-time financial intent to prevent replay.
     ConsumeIntent,
+    /// Expire an intent that is no longer valid for execution.
     ExpireIntent,
+    /// Add a non-voting observer to the membership view.
     AddObserverNode,
+    /// Promote an admitted observer to a voting role.
     PromoteVotingNode,
+    /// Remove a node from the active membership view.
     RemoveNode,
+    /// Replace ledger state with a verified snapshot.
     InstallSnapshot,
 }
 
@@ -116,30 +139,30 @@ impl LedgerCommand {
         hasher.update(b"KROOTv1:LedgerCommand");
 
         // command_type as stable u8
-        hasher.update(&[self.command_type as u8]);
+        hasher.update([self.command_type as u8]);
 
         // expected_version as Option<u64>
         match self.expected_version {
             Some(v) => {
-                hasher.update(&[1u8]);
-                hasher.update(&v.to_le_bytes());
+                hasher.update([1u8]);
+                hasher.update(v.to_le_bytes());
             }
             None => {
-                hasher.update(&[0u8]);
+                hasher.update([0u8]);
             }
         }
 
         // partition_key (length-prefixed)
-        hasher.update(&(self.partition_key.len() as u64).to_le_bytes());
+        hasher.update((self.partition_key.len() as u64).to_le_bytes());
         hasher.update(self.partition_key.as_bytes());
 
         // authorization_commitment (length-prefixed)
-        hasher.update(&(self.authorization_commitment.len() as u64).to_le_bytes());
+        hasher.update((self.authorization_commitment.len() as u64).to_le_bytes());
         hasher.update(self.authorization_commitment.as_bytes());
 
         // epoch and created_at_bucket (binary u64)
-        hasher.update(&self.epoch.to_le_bytes());
-        hasher.update(&self.created_at_bucket.to_le_bytes());
+        hasher.update(self.epoch.to_le_bytes());
+        hasher.update(self.created_at_bucket.to_le_bytes());
 
         hex::encode(hasher.finalize())
     }
@@ -586,7 +609,7 @@ impl DeterministicStateMachine for StateMachine {
         state: &mut LedgerState,
         command: &LedgerCommand,
     ) -> Result<StateTransitionReceipt, LedgerError> {
-        use crate::state_root::compute_state_root;
+        use crate::integrity::state_root::compute_state_root;
 
         // First, validate
         self.validate(state, command)?;
@@ -879,7 +902,7 @@ impl DeterministicStateMachine for StateMachine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state_root::compute_state_root;
+    use crate::integrity::state_root::compute_state_root;
 
     fn test_membership() -> MembershipView {
         MembershipView::single_node("cluster-1", "node-1")

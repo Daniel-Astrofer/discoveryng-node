@@ -1,3 +1,5 @@
+//! Command-line utility for creating or displaying a node's public identity metadata.
+
 use std::env;
 use std::path::PathBuf;
 
@@ -6,6 +8,15 @@ use kerosene_contracts::DiscoveryPlane;
 use kerosene_identity_core::NodeIdentity;
 use serde_json::json;
 
+/// Loads or creates the Bank-plane node identity and prints its public identifiers as JSON.
+///
+/// Expects exactly `<network-id> <identity-key-path>`. The identity file stores
+/// the private seed; stdout contains only the network ID, derived member ID,
+/// public key, and file path.
+///
+/// # Errors
+/// Returns an error for missing or extra arguments, invalid UTF-8 network IDs,
+/// identity file failures, or JSON serialization errors.
 fn main() -> Result<()> {
     let mut args = env::args_os();
     let program = args.next().unwrap_or_else(|| "kerosene-node-keygen".into());

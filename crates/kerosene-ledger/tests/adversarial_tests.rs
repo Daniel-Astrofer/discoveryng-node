@@ -50,6 +50,7 @@ fn sign_message(signing_key: &ed25519_dalek::SigningKey, message: &[u8]) -> Stri
 }
 
 /// Create a QuorumCertificate with a real Ed25519 signature valid against its own signing message.
+#[allow(clippy::too_many_arguments)]
 fn make_signed_qc(
     cluster_id: &str,
     epoch: u64,
@@ -817,8 +818,8 @@ fn byzantine_vote_while_behind() {
 /// Test 22: Node provides tampered snapshot — root mismatch detected.
 #[tokio::test]
 async fn snapshot_tampering_detection() {
-    use kerosene_ledger::snapshot::SnapshotStore;
-    let store = kerosene_ledger::snapshot::InMemorySnapshotStore::new();
+    use kerosene_ledger::ports::snapshot::SnapshotStore;
+    let store = kerosene_ledger::ports::snapshot::InMemorySnapshotStore::new();
     let state = LedgerState::empty(test_membership());
     let root = kerosene_ledger::compute_state_root(&state);
 

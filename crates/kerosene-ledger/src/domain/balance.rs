@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::double_entry::AccountBalance;
+use crate::domain::double_entry::AccountBalance;
 
 /// A versioned snapshot of all account balances.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]

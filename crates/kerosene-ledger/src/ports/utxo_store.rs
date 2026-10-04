@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
-use crate::chain::{OnchainState, OutPoint, UtxoEntry};
-use crate::error::LedgerError;
+use crate::consensus::chain::{OnchainState, OutPoint, UtxoEntry};
+use crate::domain::error::LedgerError;
 
 // ---------------------------------------------------------------------------
 // UtxoStore trait
@@ -104,14 +104,14 @@ impl UtxoStore for InMemoryUtxoStore {
             .cloned()
             .collect();
         // Sort for determinism
-        result.sort_by(|a, b| a.canonical_key().cmp(&b.canonical_key()));
+        result.sort_by_key(|a| a.canonical_key());
         Ok(result)
     }
 
     async fn list_all(&self) -> Result<Vec<UtxoEntry>, LedgerError> {
         let mut entries = self.inner.lock().unwrap().clone();
         // Sort for determinism
-        entries.sort_by(|a, b| a.canonical_key().cmp(&b.canonical_key()));
+        entries.sort_by_key(|a| a.canonical_key());
         Ok(entries)
     }
 
@@ -130,7 +130,7 @@ impl UtxoStore for InMemoryUtxoStore {
                 vout: outpoint.vout,
             })?;
         let current = entry.state;
-        crate::chain::UtxoTransitionGate::validate_transition(current, new_state)?;
+        crate::consensus::chain::UtxoTransitionGate::validate_transition(current, new_state)?;
         entry.state = new_state;
         Ok(())
     }
@@ -196,14 +196,14 @@ impl UtxoStore for InMemoryUtxoStore {
 
     async fn compute_utxo_root_hash(&self) -> Result<String, LedgerError> {
         let entries = self.inner.lock().unwrap();
-        Ok(crate::chain::compute_utxo_root(&entries))
+        Ok(crate::consensus::chain::compute_utxo_root(&entries))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chain::{OutPoint, UtxoEntry};
+    use crate::consensus::chain::{OutPoint, UtxoEntry};
 
     fn test_utxo(txid: &str, vout: u32, value: u64) -> UtxoEntry {
         UtxoEntry::new_seen(OutPoint::new(txid, vout), value, "addr", 1)

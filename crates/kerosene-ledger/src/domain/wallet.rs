@@ -68,12 +68,12 @@ impl BalanceView {
 
     /// Validates all balance invariants.
     pub fn validate(&self) -> Result<(), crate::LedgerError> {
-        crate::invariants::check_available_non_negative(self)?;
-        crate::invariants::check_reserved_not_exceed_available(self)?;
-        crate::invariants::check_pending_outgoing_not_exceed_available(self)?;
-        crate::invariants::check_spendable_consistency(self)?;
-        crate::invariants::check_state_version_monotonic(self)?;
-        crate::invariants::check_no_balance_overflow(self)?;
+        crate::domain::invariants::check_available_non_negative(self)?;
+        crate::domain::invariants::check_reserved_not_exceed_available(self)?;
+        crate::domain::invariants::check_pending_outgoing_not_exceed_available(self)?;
+        crate::domain::invariants::check_spendable_consistency(self)?;
+        crate::domain::invariants::check_state_version_monotonic(self)?;
+        crate::domain::invariants::check_no_balance_overflow(self)?;
         Ok(())
     }
 }

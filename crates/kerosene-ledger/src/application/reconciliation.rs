@@ -1,18 +1,24 @@
 use serde::{Deserialize, Serialize};
 
-use crate::state_machine::LedgerState;
-use crate::withdrawal::WithdrawalStatus;
+use crate::domain::state_machine::LedgerState;
+use crate::domain::withdrawal::WithdrawalStatus;
 
 // ---------------------------------------------------------------------------
 // ReconciliationStatus
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+/// Result classification for an asset/liability reconciliation pass.
 pub enum ReconciliationStatus {
+    /// Assets and liabilities agree within the configured tolerance.
     Balanced,
+    /// Difference is a small deficit within tolerance, commonly fees or timing.
     Warning,
+    /// Liabilities exceed assets beyond the tolerated difference.
     Deficit,
+    /// Assets exceed liabilities beyond the tolerated difference.
     Surplus,
+    /// Chain observation data was insufficient to make a complete comparison.
     IncompleteChainData,
 }
 
@@ -47,15 +53,24 @@ pub struct ReconciliationReport {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+/// Legacy manually supplied reconciliation totals retained for compatibility.
 pub struct ReconciliationInputs {
+    /// Hot wallet assets in satoshis.
     pub hot_sats: u64,
+    /// Cold wallet assets in satoshis.
     pub cold_sats: u64,
+    /// Custodied assets in satoshis.
     pub custodied_sats: u64,
+    /// Lightning channel assets in satoshis.
     pub lightning_sats: u64,
 
+    /// Available user account balances in satoshis.
     pub available_sats: u64,
+    /// Funds held by active reservations in satoshis.
     pub reserved_sats: u64,
+    /// Outgoing funds pending settlement in satoshis.
     pub pending_sats: u64,
+    /// Other credit liabilities in satoshis.
     pub credits_sats: u64,
 }
 
@@ -123,7 +138,8 @@ impl ReconciliationEngine {
             .filter(|u| {
                 !matches!(
                     u.state,
-                    crate::chain::OnchainState::Spent | crate::chain::OnchainState::Replaced
+                    crate::consensus::chain::OnchainState::Spent
+                        | crate::consensus::chain::OnchainState::Replaced
                 )
             })
             .map(|u| u.value_sats)
@@ -209,9 +225,7 @@ impl ReconciliationEngine {
 
         let status = if !chain_data_complete {
             ReconciliationStatus::IncompleteChainData
-        } else if diff == 0 {
-            ReconciliationStatus::Balanced
-        } else if diff > 0 && abs_diff <= (tolerance as u128) {
+        } else if diff >= 0 && abs_diff <= (tolerance as u128) {
             ReconciliationStatus::Balanced
         } else if diff < 0 && abs_diff <= (tolerance as u128) {
             ReconciliationStatus::Warning
@@ -222,7 +236,7 @@ impl ReconciliationEngine {
         };
 
         ReconciliationReport {
-            state_root: crate::state_root::compute_state_root(state),
+            state_root: crate::integrity::state_root::compute_state_root(state),
             chain_tip_hash: chain_tip_hash.to_string(),
             total_assets_sats: total_assets,
             total_liabilities_sats: total_liabilities,
@@ -250,8 +264,8 @@ pub fn is_pending_liability(status: WithdrawalStatus) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chain::{OnchainState, OutPoint};
-    use crate::state_machine::{ConsensusProfile, LedgerState, MembershipView};
+    use crate::consensus::chain::{OnchainState, OutPoint};
+    use crate::domain::state_machine::{ConsensusProfile, LedgerState, MembershipView};
 
     fn test_membership() -> MembershipView {
         MembershipView {
@@ -285,7 +299,7 @@ mod tests {
     #[test]
     fn deficit_detected_when_liabilities_exceed_assets() {
         let mut state = LedgerState::empty(test_membership());
-        let mut acc = crate::account_state::AccountState::new("user-1");
+        let mut acc = crate::domain::account_state::AccountState::new("user-1");
         acc.available_sats = 100_000;
         state.accounts.push(acc);
 
@@ -299,12 +313,14 @@ mod tests {
     #[test]
     fn surplus_detected_when_assets_exceed_liabilities() {
         let mut state = LedgerState::empty(test_membership());
-        state.utxos.push(crate::chain::UtxoEntry::new_seen(
-            OutPoint::new("tx1", 0),
-            200_000,
-            "addr1",
-            100,
-        ));
+        state
+            .utxos
+            .push(crate::consensus::chain::UtxoEntry::new_seen(
+                OutPoint::new("tx1", 0),
+                200_000,
+                "addr1",
+                100,
+            ));
 
         let report = ReconciliationEngine::reconcile(&state, "tip-hash", true);
         assert_eq!(report.status, ReconciliationStatus::Surplus);
@@ -317,15 +333,17 @@ mod tests {
         let mut state = LedgerState::empty(test_membership());
 
         // Add UTXOs representing on-chain assets
-        state.utxos.push(crate::chain::UtxoEntry::new_seen(
-            OutPoint::new("tx1", 0),
-            500_000,
-            "addr1",
-            100,
-        ));
+        state
+            .utxos
+            .push(crate::consensus::chain::UtxoEntry::new_seen(
+                OutPoint::new("tx1", 0),
+                500_000,
+                "addr1",
+                100,
+            ));
 
         // Add user account with matching balance
-        let mut acc = crate::account_state::AccountState::new("user-1");
+        let mut acc = crate::domain::account_state::AccountState::new("user-1");
         acc.available_sats = 500_000;
         state.accounts.push(acc);
 
@@ -339,14 +357,16 @@ mod tests {
         let mut state = LedgerState::empty(test_membership());
 
         // Assets slightly less than liabilities (within tolerance for miner fees)
-        state.utxos.push(crate::chain::UtxoEntry::new_seen(
-            OutPoint::new("tx1", 0),
-            1_000_000,
-            "addr1",
-            100,
-        ));
+        state
+            .utxos
+            .push(crate::consensus::chain::UtxoEntry::new_seen(
+                OutPoint::new("tx1", 0),
+                1_000_000,
+                "addr1",
+                100,
+            ));
 
-        let mut acc = crate::account_state::AccountState::new("user-1");
+        let mut acc = crate::domain::account_state::AccountState::new("user-1");
         acc.available_sats = 1_000_500; // 500 sats more than assets
         state.accounts.push(acc);
 
@@ -358,11 +378,11 @@ mod tests {
     fn compute_total_reserved_returns_sum() {
         let mut state = LedgerState::empty(test_membership());
 
-        let mut acc1 = crate::account_state::AccountState::new("user-1");
+        let mut acc1 = crate::domain::account_state::AccountState::new("user-1");
         acc1.reserved_sats = 10_000;
         state.accounts.push(acc1);
 
-        let mut acc2 = crate::account_state::AccountState::new("user-2");
+        let mut acc2 = crate::domain::account_state::AccountState::new("user-2");
         acc2.reserved_sats = 20_000;
         state.accounts.push(acc2);
 
@@ -374,16 +394,22 @@ mod tests {
         let mut state = LedgerState::empty(test_membership());
 
         // Active UTXO
-        state.utxos.push(crate::chain::UtxoEntry::new_seen(
-            OutPoint::new("tx1", 0),
-            50_000,
-            "addr1",
-            100,
-        ));
+        state
+            .utxos
+            .push(crate::consensus::chain::UtxoEntry::new_seen(
+                OutPoint::new("tx1", 0),
+                50_000,
+                "addr1",
+                100,
+            ));
 
         // Spent UTXO — should NOT count
-        let mut spent =
-            crate::chain::UtxoEntry::new_seen(OutPoint::new("tx2", 0), 200_000, "addr2", 100);
+        let mut spent = crate::consensus::chain::UtxoEntry::new_seen(
+            OutPoint::new("tx2", 0),
+            200_000,
+            "addr2",
+            100,
+        );
         spent.state = OnchainState::Spent;
         state.utxos.push(spent);
 
@@ -394,7 +420,7 @@ mod tests {
     fn compute_total_liabilities_includes_reserved_and_pending() {
         let mut state = LedgerState::empty(test_membership());
 
-        let mut acc = crate::account_state::AccountState::new("user-1");
+        let mut acc = crate::domain::account_state::AccountState::new("user-1");
         acc.available_sats = 100_000;
         acc.reserved_sats = 50_000;
         acc.pending_outgoing_sats = 10_000;

@@ -3,12 +3,12 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use crate::account_state::AccountState;
-use crate::command::{BalanceCommand, BalanceOperation, InternalTransferCommand};
-use crate::error::LedgerError;
-use crate::idempotency::IdempotencyRecord;
-use crate::reservation::{Reservation, ReservationState};
-use crate::traits::{IdempotencyStore, ReservationStore, VersionedAccountStore};
+use crate::domain::account_state::AccountState;
+use crate::domain::command::{BalanceCommand, BalanceOperation, InternalTransferCommand};
+use crate::domain::error::LedgerError;
+use crate::domain::idempotency::IdempotencyRecord;
+use crate::domain::reservation::{Reservation, ReservationState};
+use crate::ports::traits::{IdempotencyStore, ReservationStore, VersionedAccountStore};
 
 // ---------------------------------------------------------------------------
 // InMemoryVersionedAccountStore

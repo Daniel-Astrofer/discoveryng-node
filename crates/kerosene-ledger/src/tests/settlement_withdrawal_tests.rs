@@ -1,15 +1,15 @@
-use crate::certificate::QuorumCertificate;
-use crate::nonce::{InMemoryNonceChecker, NonceChecker};
-use crate::reservation::Reservation;
-use crate::settlement::{
+use crate::consensus::certificate::QuorumCertificate;
+use crate::domain::nonce::{InMemoryNonceChecker, NonceChecker};
+use crate::domain::reservation::Reservation;
+use crate::domain::settlement::{
     NonceChecker as SyncNonceChecker, PsbtCommitment, SettlementAuthorization, SettlementPolicy,
     SettlementValidator, VaultAuthorizationVerifier, VaultVerificationError,
 };
-use crate::state_machine::{LedgerState, MembershipView};
-use crate::tests::helpers::make_signed_qc;
-use crate::withdrawal::{
+use crate::domain::state_machine::{LedgerState, MembershipView};
+use crate::domain::withdrawal::{
     InMemoryWithdrawalStore, WithdrawalRecord, WithdrawalStatus, WithdrawalStore,
 };
+use crate::tests::helpers::make_signed_qc;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -33,6 +33,7 @@ fn test_qc() -> QuorumCertificate {
     .0
 }
 
+#[allow(clippy::too_many_arguments)]
 fn make_qc(
     cluster_id: &str,
     epoch: u64,
@@ -176,7 +177,7 @@ fn verify_against_reservation_rejects_terminal_reservation() {
     let auth = test_auth();
     let mut reservation =
         Reservation::new("res-1", "account-1", 100_000, 50, 300, "intent-commit-1");
-    reservation.state = crate::reservation::ReservationState::Consumed;
+    reservation.state = crate::domain::reservation::ReservationState::Consumed;
     assert!(auth.verify_against_reservation(&reservation).is_err());
 }
 
@@ -822,7 +823,7 @@ async fn withdrawal_broadcast_txid_immutable() {
         .unwrap_err();
     assert!(matches!(
         err,
-        crate::error::LedgerError::InvalidStateTransition(_)
+        crate::domain::error::LedgerError::InvalidStateTransition(_)
     ));
 }
 
