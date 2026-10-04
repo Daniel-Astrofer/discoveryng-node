@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use ed25519_dalek::{Signer, SigningKey};
 use kerosene_contracts::{
-    member_id, CanonicalSignable, DiscoveryPlane, GenesisTrustBundleV1, ManifestMember,
-    ManifestSignature, MembershipManifestV1, MembershipPhase, TrustMember, TrustPlane,
-    DISCOVERY_CONTRACT_VERSION,
+    canonical_hash, member_id, CanonicalSignable, DiscoveryPlane, GenesisTrustBundleV1,
+    ManifestMember, ManifestSignature, MembershipManifestV1, MembershipPhase,
+    StateSnapshotAttestationV1, TrustMember, TrustPlane, DISCOVERY_CONTRACT_VERSION,
 };
 use kerosene_discovery::{DiscoveryError, HelloExchangeRequest, PersistentPeerStore};
 use kerosene_identity_core::NodeIdentity;
@@ -105,6 +105,24 @@ fn initial_manifest(
     manifest
 }
 
+fn next_stable_manifest(
+    current: &MembershipManifestV1,
+    keys: &[SigningKey],
+) -> MembershipManifestV1 {
+    let mut next = current.clone();
+    next.epoch = current.epoch + 1;
+    next.previous_manifest_hash = canonical_hash(current);
+    next.signatures.clear();
+    next.signatures = keys[..2]
+        .iter()
+        .map(|key| ManifestSignature {
+            signer_id: member_id(NETWORK, key.verifying_key().as_bytes()),
+            signature: hex::encode(key.sign(&next.signing_bytes()).to_bytes()),
+        })
+        .collect();
+    next
+}
+
 fn snapshot(epoch: u64) -> StateSnapshot {
     let bytes = format!("verified-state-{epoch}").into_bytes();
     StateSnapshot {
@@ -112,6 +130,32 @@ fn snapshot(epoch: u64) -> StateSnapshot {
         state_root: hex::encode(Sha256::digest(&bytes)),
         bytes,
     }
+}
+
+fn attestation(
+    plane: DiscoveryPlane,
+    keys: &[SigningKey],
+    manifest: &MembershipManifestV1,
+    snapshot: &StateSnapshot,
+) -> StateSnapshotAttestationV1 {
+    let mut attestation = StateSnapshotAttestationV1 {
+        contract_version: DISCOVERY_CONTRACT_VERSION.into(),
+        network_id: NETWORK.into(),
+        plane,
+        membership_manifest_hash: canonical_hash(manifest),
+        snapshot_epoch: snapshot.epoch,
+        state_root: snapshot.state_root.clone(),
+        created_at_epoch_ms: 1,
+        signatures: vec![],
+    };
+    attestation.signatures = keys[..2]
+        .iter()
+        .map(|key| ManifestSignature {
+            signer_id: member_id(NETWORK, key.verifying_key().as_bytes()),
+            signature: hex::encode(key.sign(&attestation.signing_bytes()).to_bytes()),
+        })
+        .collect();
+    attestation
 }
 
 #[test]
@@ -165,15 +209,46 @@ fn vault_becomes_financially_ready_only_after_live_threshold_and_verified_manife
     assert!(service.readiness(now).quorum_ready);
     assert!(!service.readiness(now).financial_ready);
 
-    service
-        .accept_membership(initial_manifest(DiscoveryPlane::Vault, &vault, 'd'))
-        .unwrap();
+    let manifest = initial_manifest(DiscoveryPlane::Vault, &vault, 'd');
+    service.accept_membership(manifest.clone()).unwrap();
     assert!(!service.readiness(now).financial_ready);
-    service.verify_state_snapshot(&snapshot(1)).unwrap();
+    let first = snapshot(1);
+    let first_attestation = attestation(DiscoveryPlane::Vault, &vault, &manifest, &first);
+    assert!(service
+        .verify_attested_state_snapshot(&first_attestation, b"corrupted-state".to_vec(),)
+        .is_err());
+    assert!(!service.readiness(now).financial_ready);
+    service
+        .verify_attested_state_snapshot(&first_attestation, first.bytes.clone())
+        .unwrap();
     let ready = service.readiness(now);
     assert!(ready.quorum_ready);
     assert!(ready.financial_ready);
     assert_eq!(ready.operational_state, "ACTIVE");
+
+    let second = snapshot(2);
+    service
+        .verify_attested_state_snapshot(
+            &attestation(DiscoveryPlane::Vault, &vault, &manifest, &second),
+            second.bytes,
+        )
+        .unwrap();
+    assert!(service
+        .verify_attested_state_snapshot(&first_attestation, first.bytes)
+        .is_err());
+    assert!(service.readiness(now).financial_ready);
+
+    let next_manifest = next_stable_manifest(&manifest, &vault);
+    service.accept_membership(next_manifest.clone()).unwrap();
+    assert!(!service.readiness(now).financial_ready);
+    let third = snapshot(3);
+    service
+        .verify_attested_state_snapshot(
+            &attestation(DiscoveryPlane::Vault, &vault, &next_manifest, &third),
+            third.bytes,
+        )
+        .unwrap();
+    assert!(service.readiness(now).financial_ready);
 
     let expired = service.readiness(now + 90_001);
     assert!(!expired.quorum_ready);
@@ -204,7 +279,26 @@ fn restart_preserves_manifests_but_not_liveness_authority() {
         90_000,
     )
     .unwrap();
-    service.accept_membership(manifest).unwrap();
+    let now = kerosene_node::now_epoch_ms();
+    let remote = NodeIdentity::from_secret(NETWORK, DiscoveryPlane::Vault, [5; 32]);
+    service
+        .exchange_hello(
+            &HelloExchangeRequest {
+                hello: remote.sign_hello(service.issue_challenge(now), onion('e'), now),
+                response_challenge: "b".repeat(64),
+            },
+            now,
+        )
+        .unwrap();
+    service.accept_membership(manifest.clone()).unwrap();
+    let state = snapshot(1);
+    service
+        .verify_attested_state_snapshot(
+            &attestation(DiscoveryPlane::Vault, &vault, &manifest, &state),
+            state.bytes,
+        )
+        .unwrap();
+    assert!(service.readiness(now).financial_ready);
     drop(service);
 
     let store = Arc::new(PersistentPeerStore::open(root.path()).unwrap());
@@ -222,11 +316,21 @@ fn restart_preserves_manifests_but_not_liveness_authority() {
         90_000,
     )
     .unwrap();
-    let ready = restarted.readiness(10_000);
+    let ready = restarted.readiness(now);
     assert!(ready.member_ready);
     assert!(ready.manifest_hash.is_some());
     assert!(!ready.quorum_ready);
     assert!(!ready.financial_ready);
+    restarted
+        .exchange_hello(
+            &HelloExchangeRequest {
+                hello: remote.sign_hello(restarted.issue_challenge(now + 1), onion('e'), now + 1),
+                response_challenge: "c".repeat(64),
+            },
+            now + 1,
+        )
+        .unwrap();
+    assert!(restarted.readiness(now + 1).financial_ready);
 }
 
 #[test]
@@ -256,10 +360,15 @@ fn three_nodes_form_same_plane_quorum_through_authenticated_handshakes() {
             response_challenge: format!("{index:064x}"),
         };
         services[index].exchange_hello(&request, now).unwrap();
+        let manifest = initial_manifest(DiscoveryPlane::Vault, &vault, 'd');
+        services[index].accept_membership(manifest.clone()).unwrap();
+        let snapshot = snapshot(1);
         services[index]
-            .accept_membership(initial_manifest(DiscoveryPlane::Vault, &vault, 'd'))
+            .verify_attested_state_snapshot(
+                &attestation(DiscoveryPlane::Vault, &vault, &manifest, &snapshot),
+                snapshot.bytes,
+            )
             .unwrap();
-        services[index].verify_state_snapshot(&snapshot(1)).unwrap();
         let ready = services[index].readiness(now);
         assert!(ready.quorum_ready, "{ready:?}");
         assert!(ready.financial_ready, "{ready:?}");

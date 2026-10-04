@@ -55,8 +55,20 @@ Dockerfile.
 
 Production startup requires a v3 onion endpoint, Tor `socks5h`, a
 `GenesisTrustBundleV1`, a server certificate/key and a CA used to require client
-certificates. See [operations](../operations/OPERATIONS.md) for the complete environment
-contract and progressive bootstrap procedure.
+certificates. It also requires two externally mounted state inputs:
+
+- `KEROSENE_STATE_SNAPSHOT_ATTESTATION_PATH`: strict JSON
+  `StateSnapshotAttestationV1`, threshold-signed by the current plane roster and
+  bound to that membership manifest hash;
+- `KEROSENE_STATE_SNAPSHOT_PAYLOAD_PATH`: the exact state bytes whose SHA-256
+  equals the attested `state_root`.
+
+Node remains locally available while either file is absent or invalid, but it
+does not report financial readiness. A newer snapshot epoch can replace the
+current binding; epoch regression and reuse of an epoch with different bytes
+fail closed. Membership changes clear the old binding and require a new
+attestation. The accepted binding is persisted, while peer liveness must still
+be re-established after restart.
 
 ```bash
 cargo run --locked --features production -p kerosene-node

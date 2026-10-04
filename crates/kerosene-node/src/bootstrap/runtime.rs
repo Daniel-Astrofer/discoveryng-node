@@ -8,7 +8,9 @@ use std::time::Duration;
 
 use crate::{now_epoch_ms, NodeService};
 use anyhow::{anyhow, Context};
-use kerosene_contracts::{DiscoveryPlane, GenesisTrustBundleV1};
+use kerosene_contracts::{
+    canonical_hash, DiscoveryPlane, GenesisTrustBundleV1, StateSnapshotAttestationV1,
+};
 use kerosene_discovery::{
     validate_onion_endpoint, DiscoverySource, EndpointRecord, PersistentPeerStore,
     TorHandshakeClient,
@@ -43,6 +45,8 @@ struct Config {
     peer_live_window_ms: u64,
     discovery_interval_ms: u64,
     ledger_db_path: PathBuf,
+    state_snapshot_attestation: PathBuf,
+    state_snapshot_payload: PathBuf,
 }
 
 impl Config {
@@ -98,6 +102,12 @@ impl Config {
             peer_live_window_ms: integer("KEROSENE_PEER_LIVE_WINDOW_MS", 90_000)?,
             discovery_interval_ms: integer("KEROSENE_DISCOVERY_INTERVAL_MS", 15_000)?,
             ledger_db_path: path("KEROSENE_LEDGER_DB_PATH", "ledger-data"),
+            state_snapshot_attestation: PathBuf::from(required(
+                "KEROSENE_STATE_SNAPSHOT_ATTESTATION_PATH",
+            )?),
+            state_snapshot_payload: PathBuf::from(required(
+                "KEROSENE_STATE_SNAPSHOT_PAYLOAD_PATH",
+            )?),
         })
     }
 }
@@ -179,6 +189,13 @@ pub async fn run() -> anyhow::Result<()> {
         );
     }
 
+    spawn_state_snapshot_verification(
+        service.clone(),
+        config.state_snapshot_attestation,
+        config.state_snapshot_payload,
+        config.discovery_interval_ms,
+    );
+
     let observer = super::release_observer::from_env(
         config.plane,
         &config.network_id,
@@ -199,6 +216,59 @@ pub async fn run() -> anyhow::Result<()> {
         .serve(router.into_make_service())
         .await
         .context("serve discovery API")
+}
+
+fn spawn_state_snapshot_verification(
+    service: NodeService,
+    attestation_path: PathBuf,
+    payload_path: PathBuf,
+    interval_ms: u64,
+) {
+    tokio::spawn(async move {
+        let interval = Duration::from_millis(interval_ms.max(1_000));
+        let mut last_error = None;
+        let mut last_accepted = None;
+        loop {
+            match load_state_snapshot(&attestation_path, &payload_path) {
+                Ok((attestation, payload)) => {
+                    let identifier = canonical_hash(&attestation);
+                    if !(service.readiness(now_epoch_ms()).financial_ready
+                        && last_accepted.as_deref() == Some(identifier.as_str()))
+                    {
+                        match service.verify_attested_state_snapshot(&attestation, payload) {
+                            Ok(()) => {
+                                last_accepted = Some(identifier);
+                                last_error = None;
+                                info!("threshold-attested state snapshot accepted");
+                            }
+                            Err(error) if last_error.as_deref() != Some(error.as_str()) => {
+                                warn!(%error, "state snapshot verification is not ready");
+                                last_error = Some(error);
+                            }
+                            Err(_) => {}
+                        }
+                    }
+                }
+                Err(error) if last_error.as_deref() != Some(error.as_str()) => {
+                    warn!(%error, "state snapshot verification is not ready");
+                    last_error = Some(error);
+                }
+                Err(_) => {}
+            }
+            tokio::time::sleep(interval).await;
+        }
+    });
+}
+
+fn load_state_snapshot(
+    attestation_path: &PathBuf,
+    payload_path: &PathBuf,
+) -> Result<(StateSnapshotAttestationV1, Vec<u8>), String> {
+    let attestation: StateSnapshotAttestationV1 =
+        serde_json::from_slice(&fs::read(attestation_path).map_err(|error| error.to_string())?)
+            .map_err(|error| error.to_string())?;
+    let payload = fs::read(payload_path).map_err(|error| error.to_string())?;
+    Ok((attestation, payload))
 }
 
 #[allow(clippy::too_many_arguments)]

@@ -1,8 +1,8 @@
 use ed25519_dalek::{Signer, SigningKey};
 use kerosene_contracts::{
     canonical_hash, member_id, CanonicalSignable, DiscoveryPlane, GenesisTrustBundleV1,
-    ManifestMember, ManifestSignature, MembershipManifestV1, MembershipPhase, TrustMember,
-    TrustPlane, DISCOVERY_CONTRACT_VERSION,
+    ManifestMember, ManifestSignature, MembershipManifestV1, MembershipPhase,
+    StateSnapshotAttestationV1, TrustMember, TrustPlane, DISCOVERY_CONTRACT_VERSION,
 };
 use kerosene_membership::{MembershipError, MembershipVerifier};
 
@@ -70,6 +70,30 @@ fn sign(manifest: &mut MembershipManifestV1, keys: &[&SigningKey]) {
             signature: hex::encode(key.sign(&manifest.signing_bytes()).to_bytes()),
         })
         .collect();
+}
+
+fn snapshot_attestation(
+    manifest: &MembershipManifestV1,
+    keys: &[&SigningKey],
+) -> StateSnapshotAttestationV1 {
+    let mut attestation = StateSnapshotAttestationV1 {
+        contract_version: DISCOVERY_CONTRACT_VERSION.into(),
+        network_id: NETWORK.into(),
+        plane: DiscoveryPlane::Vault,
+        membership_manifest_hash: canonical_hash(manifest),
+        snapshot_epoch: 1,
+        state_root: "a".repeat(64),
+        created_at_epoch_ms: 1,
+        signatures: vec![],
+    };
+    attestation.signatures = keys
+        .iter()
+        .map(|key| ManifestSignature {
+            signer_id: member_id(NETWORK, key.verifying_key().as_bytes()),
+            signature: hex::encode(key.sign(&attestation.signing_bytes()).to_bytes()),
+        })
+        .collect();
+    attestation
 }
 
 #[test]
@@ -215,4 +239,42 @@ fn rejects_clearnet_endpoint_inside_a_signed_manifest() {
         verifier.accept(initial),
         Err(MembershipError::InvalidEndpoint)
     );
+}
+
+#[test]
+fn snapshot_attestation_requires_current_roster_threshold_and_binding() {
+    let keys = [key(1), key(2), key(3)];
+    let mut verifier = MembershipVerifier::new(&bundle(&keys), DiscoveryPlane::Vault).unwrap();
+    let mut initial = manifest(
+        1,
+        MembershipPhase::Stable,
+        "0".repeat(64),
+        keys.iter().map(|key| member(key, 'a')).collect(),
+        None,
+    );
+    sign(&mut initial, &[&keys[0], &keys[1]]);
+    verifier.accept(initial.clone()).unwrap();
+
+    assert_eq!(
+        verifier.verify_state_snapshot_attestation(&snapshot_attestation(&initial, &[&keys[0]],)),
+        Err(MembershipError::InsufficientSignatures)
+    );
+    let mut wrong_manifest = snapshot_attestation(&initial, &[&keys[0], &keys[1]]);
+    wrong_manifest.membership_manifest_hash = "b".repeat(64);
+    assert_eq!(
+        verifier.verify_state_snapshot_attestation(&wrong_manifest),
+        Err(MembershipError::HashChain)
+    );
+    let duplicate = {
+        let mut value = snapshot_attestation(&initial, &[&keys[0]]);
+        value.signatures.push(value.signatures[0].clone());
+        value
+    };
+    assert_eq!(
+        verifier.verify_state_snapshot_attestation(&duplicate),
+        Err(MembershipError::DuplicateIdentity)
+    );
+    verifier
+        .verify_state_snapshot_attestation(&snapshot_attestation(&initial, &[&keys[0], &keys[1]]))
+        .unwrap();
 }

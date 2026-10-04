@@ -1020,7 +1020,7 @@ dependencies = [
 [[package]]
 name = "kerosene-contracts"
 version = "0.3.0"
-source = "git+https://github.com/Daniel-Astrofer/contracts.git?rev=d1de045527242596bbaf74000049a92d19324ccf#d1de045527242596bbaf74000049a92d19324ccf"
+source = "git+https://github.com/Daniel-Astrofer/contracts.git?rev=6eb4e289235743845d0d425d093f3ca3d59645b7#6eb4e289235743845d0d425d093f3ca3d59645b7"
 dependencies = [
  "hex",
  "schemars",

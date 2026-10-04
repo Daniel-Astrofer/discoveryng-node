@@ -3,8 +3,8 @@ use std::collections::{HashMap, HashSet};
 use ed25519_dalek::{Signature, Verifier, VerifyingKey};
 use kerosene_contracts::{
     canonical_hash, member_id, CanonicalSignable, DiscoveryPlane, GenesisTrustBundleV1,
-    ManifestMember, MembershipManifestV1, MembershipPhase, TrustMember, TrustPlane,
-    DISCOVERY_CONTRACT_VERSION,
+    ManifestMember, ManifestSignature, MembershipManifestV1, MembershipPhase,
+    StateSnapshotAttestationV1, TrustMember, TrustPlane, DISCOVERY_CONTRACT_VERSION,
 };
 use thiserror::Error;
 use url::Url;
@@ -33,6 +33,10 @@ pub enum MembershipError {
     JointRosterMismatch,
     #[error("manifest has insufficient valid signatures")]
     InsufficientSignatures,
+    #[error("membership state persistence failed")]
+    Persistence,
+    #[error("state snapshot attestation structure is invalid")]
+    InvalidSnapshotAttestation,
 }
 
 #[derive(Debug, Clone)]
@@ -133,6 +137,36 @@ impl MembershipVerifier {
                 .map(|member| (member.member_id.clone(), member.root_public_key.clone()))
                 .collect(),
         }
+    }
+
+    pub fn verify_state_snapshot_attestation(
+        &self,
+        attestation: &StateSnapshotAttestationV1,
+    ) -> Result<(), MembershipError> {
+        if attestation.contract_version != DISCOVERY_CONTRACT_VERSION {
+            return Err(MembershipError::ContractVersion);
+        }
+        if attestation.network_id != self.network_id || attestation.plane != self.plane {
+            return Err(MembershipError::ScopeMismatch);
+        }
+        if attestation.snapshot_epoch == 0
+            || attestation.created_at_epoch_ms == 0
+            || decode_array::<32>(&attestation.state_root).is_err()
+        {
+            return Err(MembershipError::InvalidSnapshotAttestation);
+        }
+        if self.current_hash().as_deref() != Some(&attestation.membership_manifest_hash) {
+            return Err(MembershipError::HashChain);
+        }
+        let mut signers = HashSet::new();
+        if attestation
+            .signatures
+            .iter()
+            .any(|signature| !signers.insert(&signature.signer_id))
+        {
+            return Err(MembershipError::DuplicateIdentity);
+        }
+        require_attestation_signatures(attestation, self.authorized_keys(), self.threshold())
     }
 
     fn validate_structure(&self, manifest: &MembershipManifestV1) -> Result<(), MembershipError> {
@@ -256,6 +290,36 @@ fn require_signatures(
 }
 
 fn verify_signature(public_key: &str, signature: &str, manifest: &MembershipManifestV1) -> bool {
+    verify_signable(public_key, signature, manifest)
+}
+
+fn require_attestation_signatures(
+    attestation: &StateSnapshotAttestationV1,
+    allowed: HashMap<String, String>,
+    threshold: usize,
+) -> Result<(), MembershipError> {
+    let valid = attestation
+        .signatures
+        .iter()
+        .filter(|candidate| verify_candidate(candidate, &allowed, attestation))
+        .count();
+    if valid < threshold {
+        return Err(MembershipError::InsufficientSignatures);
+    }
+    Ok(())
+}
+
+fn verify_candidate(
+    candidate: &ManifestSignature,
+    allowed: &HashMap<String, String>,
+    value: &impl CanonicalSignable,
+) -> bool {
+    allowed
+        .get(&candidate.signer_id)
+        .is_some_and(|key| verify_signable(key, &candidate.signature, value))
+}
+
+fn verify_signable(public_key: &str, signature: &str, value: &impl CanonicalSignable) -> bool {
     let Ok(key_bytes) = decode_array::<32>(public_key) else {
         return false;
     };
@@ -266,7 +330,7 @@ fn verify_signature(public_key: &str, signature: &str, manifest: &MembershipMani
         return false;
     };
     key.verify(
-        &manifest.signing_bytes(),
+        &value.signing_bytes(),
         &Signature::from_bytes(&signature_bytes),
     )
     .is_ok()

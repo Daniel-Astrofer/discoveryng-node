@@ -2,7 +2,9 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
 
-use kerosene_contracts::{canonical_hash, DiscoveryPlane, MembershipManifestV1, PeerHelloV1};
+use kerosene_contracts::{
+    canonical_hash, DiscoveryPlane, MembershipManifestV1, PeerHelloV1, StateSnapshotAttestationV1,
+};
 use kerosene_discovery::{
     ChallengeStore, DiscoveryError, HelloExchangeRequest, PeerAuthenticator, PersistentPeerStore,
 };
@@ -10,6 +12,7 @@ use kerosene_identity_core::NodeIdentity;
 use kerosene_membership::{MembershipError, MembershipVerifier};
 use kerosene_sync::{
     Lifecycle, LifecycleState, LifecycleStore, StateSnapshot, StateSynchronizer, SyncError,
+    VerifiedStateBinding,
 };
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
@@ -74,6 +77,12 @@ impl NodeService {
         );
         let mut lifecycle = lifecycle_store.load().map_err(|error| error.to_string())?;
         bootstrap_local_lifecycle(&mut lifecycle).map_err(|error| error.to_string())?;
+        let current_manifest_hash = membership.read().current_hash();
+        if lifecycle.verified_state().is_some_and(|binding| {
+            current_manifest_hash.as_deref() != Some(&binding.membership_manifest_hash)
+        }) {
+            lifecycle.require_state_revalidation();
+        }
         lifecycle_store
             .save(&lifecycle)
             .map_err(|error| error.to_string())?;
@@ -117,15 +126,26 @@ impl NodeService {
             lifecycle,
             LifecycleState::StateVerified | LifecycleState::Eligible | LifecycleState::Active
         );
+        let current_manifest_hash = membership.current_hash();
+        let state_bound_to_membership =
+            self.inner
+                .lifecycle
+                .lock()
+                .verified_state()
+                .is_some_and(|binding| {
+                    current_manifest_hash.as_deref() == Some(&binding.membership_manifest_hash)
+                });
+        let financial_ready =
+            quorum && lifecycle == LifecycleState::Active && state_bound_to_membership;
         Readiness {
             live: true,
             local_ready: lifecycle != LifecycleState::Created,
             member_ready: local_member,
             quorum_ready: quorum,
-            financial_ready: quorum && lifecycle == LifecycleState::Active,
+            financial_ready,
             plane: self.inner.plane,
             lifecycle,
-            operational_state: if lifecycle == LifecycleState::Active && quorum {
+            operational_state: if financial_ready {
                 "ACTIVE"
             } else if state_verified {
                 "ELIGIBLE_WAITING_FOR_QUORUM"
@@ -181,12 +201,21 @@ impl NodeService {
         if self.inner.membership.read().current_hash().as_deref() == Some(manifest_hash.as_str()) {
             return Ok(());
         }
+        let previous_hash = self.inner.membership.read().current_hash();
         let mut candidate = self.inner.membership.read().clone();
         candidate.accept(manifest.clone())?;
+        if previous_hash.is_some() {
+            let mut lifecycle = self.inner.lifecycle.lock();
+            lifecycle.require_state_revalidation();
+            self.inner
+                .lifecycle_store
+                .save(&lifecycle)
+                .map_err(|_| MembershipError::Persistence)?;
+        }
         self.inner
             .peer_store
             .append_manifest(&manifest)
-            .map_err(|_| MembershipError::HashChain)?;
+            .map_err(|_| MembershipError::Persistence)?;
         *self.inner.membership.write() = candidate;
         self.activate_if_quorum(now_epoch_ms());
         Ok(())
@@ -226,6 +255,44 @@ impl NodeService {
         lifecycle.advance(LifecycleState::Eligible)?;
         self.inner.lifecycle_store.save(&lifecycle)?;
         drop(lifecycle);
+        self.activate_if_quorum(now_epoch_ms());
+        Ok(())
+    }
+
+    pub fn verify_attested_state_snapshot(
+        &self,
+        attestation: &StateSnapshotAttestationV1,
+        bytes: Vec<u8>,
+    ) -> Result<(), String> {
+        let membership = self.inner.membership.read();
+        membership
+            .verify_state_snapshot_attestation(attestation)
+            .map_err(|error| error.to_string())?;
+        let snapshot = StateSnapshot {
+            epoch: attestation.snapshot_epoch,
+            bytes,
+            state_root: attestation.state_root.clone(),
+        };
+        snapshot.verify().map_err(|error| error.to_string())?;
+        let mut lifecycle = self.inner.lifecycle.lock();
+        lifecycle
+            .bind_verified_state(VerifiedStateBinding {
+                membership_manifest_hash: attestation.membership_manifest_hash.clone(),
+                snapshot_epoch: attestation.snapshot_epoch,
+                state_root: attestation.state_root.clone(),
+            })
+            .map_err(|error| error.to_string())?;
+        if lifecycle.state() == LifecycleState::StateVerified {
+            lifecycle
+                .advance(LifecycleState::Eligible)
+                .map_err(|error| error.to_string())?;
+        }
+        self.inner
+            .lifecycle_store
+            .save(&lifecycle)
+            .map_err(|error| error.to_string())?;
+        drop(lifecycle);
+        drop(membership);
         self.activate_if_quorum(now_epoch_ms());
         Ok(())
     }

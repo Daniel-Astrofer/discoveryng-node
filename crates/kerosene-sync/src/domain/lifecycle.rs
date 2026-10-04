@@ -47,6 +47,10 @@ pub enum SyncError {
     },
     #[error("snapshot state root mismatch")]
     StateRootMismatch,
+    #[error("snapshot epoch regressed")]
+    SnapshotEpochRegression,
+    #[error("snapshot epoch was reused with a different state root")]
+    SnapshotEpochConflict,
     #[error("lifecycle persistence failed: {0}")]
     Io(String),
     #[error("lifecycle persistence is invalid: {0}")]
@@ -58,12 +62,15 @@ pub enum SyncError {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Lifecycle {
     state: LifecycleState,
+    #[serde(default)]
+    verified_state: Option<VerifiedStateBinding>,
 }
 
 impl Default for Lifecycle {
     fn default() -> Self {
         Self {
             state: LifecycleState::Created,
+            verified_state: None,
         }
     }
 }
@@ -83,6 +90,47 @@ impl Lifecycle {
         self.state = target;
         Ok(())
     }
+
+    pub fn bind_verified_state(&mut self, binding: VerifiedStateBinding) -> Result<(), SyncError> {
+        if let Some(current) = &self.verified_state {
+            if binding.snapshot_epoch < current.snapshot_epoch {
+                return Err(SyncError::SnapshotEpochRegression);
+            }
+            if binding.snapshot_epoch == current.snapshot_epoch
+                && (binding.state_root != current.state_root
+                    || binding.membership_manifest_hash != current.membership_manifest_hash)
+            {
+                return Err(SyncError::SnapshotEpochConflict);
+            }
+            self.verified_state = Some(binding);
+            return Ok(());
+        }
+        self.advance(LifecycleState::StateVerified)?;
+        self.verified_state = Some(binding);
+        Ok(())
+    }
+
+    pub fn verified_state(&self) -> Option<&VerifiedStateBinding> {
+        self.verified_state.as_ref()
+    }
+
+    pub fn require_state_revalidation(&mut self) {
+        if matches!(
+            self.state,
+            LifecycleState::StateVerified | LifecycleState::Eligible | LifecycleState::Active
+        ) {
+            self.state = LifecycleState::Syncing;
+        }
+        self.verified_state = None;
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct VerifiedStateBinding {
+    pub membership_manifest_hash: String,
+    pub snapshot_epoch: u64,
+    pub state_root: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

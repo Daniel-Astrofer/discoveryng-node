@@ -26,7 +26,7 @@ axum-server = { version = "0.8", features = ["tls-rustls"] }
 clap = { version = "4", features = ["derive"] }
 ed25519-dalek = { version = "2", features = ["rand_core", "digest", "pkcs8"] }
 hex = "0.4"
-kerosene-contracts = { git = "https://github.com/Daniel-Astrofer/contracts.git", rev = "d1de045527242596bbaf74000049a92d19324ccf", version = "=0.3.0" }
+kerosene-contracts = { git = "https://github.com/Daniel-Astrofer/contracts.git", rev = "6eb4e289235743845d0d425d093f3ca3d59645b7", version = "=0.3.0" }
 parking_lot = "0.12"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"] }
