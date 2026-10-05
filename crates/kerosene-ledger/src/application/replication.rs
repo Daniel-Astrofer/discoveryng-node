@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::certificate::CertifiedSnapshot;
-use crate::error::LedgerError;
-use crate::snapshot::SnapshotStore;
-use crate::state_machine::{DeterministicStateMachine, LedgerCommand, LedgerState};
+use crate::consensus::certificate::CertifiedSnapshot;
+use crate::domain::error::LedgerError;
+use crate::domain::state_machine::{DeterministicStateMachine, LedgerCommand, LedgerState};
+use crate::ports::snapshot::SnapshotStore;
 
 // ---------------------------------------------------------------------------
 // Constants
@@ -68,17 +68,23 @@ pub enum DivergenceResult {
     InSync,
     /// Local node is ahead of the peer.
     Ahead {
+        /// Highest command sequence applied locally.
         local_sequence: u64,
+        /// Highest command sequence applied by the peer.
         peer_sequence: u64,
     },
     /// Local node is behind the peer.
     Behind {
+        /// Highest command sequence applied locally.
         local_sequence: u64,
+        /// Highest command sequence applied by the peer.
         peer_sequence: u64,
     },
     /// State root mismatch (actual divergence).
     StateRootMismatch {
+        /// State root computed by the local node.
         local_root: String,
+        /// State root reported by the peer.
         peer_root: String,
     },
 }

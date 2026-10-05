@@ -1,5 +1,5 @@
-use crate::error::LedgerError;
-use crate::wallet::BalanceView;
+use crate::domain::error::LedgerError;
+use crate::domain::wallet::BalanceView;
 
 /// Asserts that the available balance field is semantically non-negative.
 /// For `u64` this is always true, but provides a semantic check point

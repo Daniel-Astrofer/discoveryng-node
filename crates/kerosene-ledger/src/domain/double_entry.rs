@@ -5,13 +5,15 @@ use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::account::{AccountClass, StandardAccount};
-use crate::error::LedgerError;
+use crate::domain::account::{AccountClass, StandardAccount};
+use crate::domain::error::LedgerError;
 
 /// A single debit or credit posting against a standard account.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Posting {
+    /// Standard chart-of-accounts entry affected by this posting.
     pub account: StandardAccount,
+    /// Positive posting amount in satoshis.
     pub amount_sats: u64,
 }
 

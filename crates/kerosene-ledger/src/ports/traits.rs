@@ -1,10 +1,10 @@
 use async_trait::async_trait;
 
-use crate::account_state::AccountState;
-use crate::command::{BalanceCommand, InternalTransferCommand};
-use crate::error::LedgerError;
-use crate::idempotency::IdempotencyRecord;
-use crate::reservation::{Reservation, ReservationState};
+use crate::domain::account_state::AccountState;
+use crate::domain::command::{BalanceCommand, InternalTransferCommand};
+use crate::domain::error::LedgerError;
+use crate::domain::idempotency::IdempotencyRecord;
+use crate::domain::reservation::{Reservation, ReservationState};
 
 // ---------------------------------------------------------------------------
 // VersionedAccountStore — per-account optimistic versioning

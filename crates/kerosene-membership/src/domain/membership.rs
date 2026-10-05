@@ -10,32 +10,45 @@ use thiserror::Error;
 use url::Url;
 
 #[derive(Debug, Error, PartialEq, Eq)]
+/// Rejection reasons produced while validating genesis trust or membership changes.
 pub enum MembershipError {
     #[error("unsupported discovery contract version")]
+    /// Input uses a contract version this verifier does not implement.
     ContractVersion,
     #[error("network or discovery plane mismatch")]
+    /// Manifest network or plane differs from the verifier's configured scope.
     ScopeMismatch,
     #[error("threshold is invalid for the roster")]
+    /// The threshold is zero or greater than the member count.
     InvalidThreshold,
     #[error("member ID does not match its network-bound root key")]
+    /// A member identifier is inconsistent with its network-bound root key.
     MemberIdMismatch,
     #[error("member endpoint must be an HTTPS v3 onion URL")]
+    /// A member endpoint is not a valid HTTPS v3 onion service URL.
     InvalidEndpoint,
     #[error("duplicate member or signer")]
+    /// Roster entries or manifest signer identities contain duplicates.
     DuplicateIdentity,
     #[error("manifest hash chain is invalid")]
+    /// The predecessor digest does not match the accepted manifest.
     HashChain,
     #[error("manifest epoch transition is invalid")]
+    /// The manifest phase or epoch does not follow the required transition.
     EpochTransition,
     #[error("membership change must use OLD -> JOINT -> NEW")]
+    /// A roster change attempted to bypass the joint-consensus phase.
     JointConsensusRequired,
     #[error("joint consensus transition changed its proposed roster")]
+    /// The final stable roster differs from the roster approved in the joint phase.
     JointRosterMismatch,
     #[error("manifest has insufficient valid signatures")]
+    /// Fewer than the applicable old/new quorum signatures verified.
     InsufficientSignatures,
 }
 
 #[derive(Debug, Clone)]
+/// Verifies an ordered chain of manifests against genesis trust and quorum rules.
 pub struct MembershipVerifier {
     network_id: String,
     plane: DiscoveryPlane,
@@ -44,6 +57,13 @@ pub struct MembershipVerifier {
 }
 
 impl MembershipVerifier {
+    /// Creates a verifier for one network plane using the supplied genesis trust bundle.
+    ///
+    /// Both trust planes are validated before selecting the requested plane.
+    ///
+    /// # Errors
+    /// Returns a membership error if the contract version, trust threshold,
+    /// member identity, or uniqueness checks fail.
     pub fn new(
         bundle: &GenesisTrustBundleV1,
         plane: DiscoveryPlane,
@@ -64,6 +84,10 @@ impl MembershipVerifier {
         })
     }
 
+    /// Restores verifier state by replaying accepted manifests in order.
+    ///
+    /// # Errors
+    /// Returns the first error from genesis validation or manifest acceptance.
     pub fn restore(
         bundle: &GenesisTrustBundleV1,
         plane: DiscoveryPlane,
@@ -76,6 +100,14 @@ impl MembershipVerifier {
         Ok(verifier)
     }
 
+    /// Validates and accepts the next manifest, replacing current state only on success.
+    ///
+    /// The initial manifest is checked against genesis trust. Later changes must
+    /// follow the stable-to-joint-to-stable quorum and hash-chain rules.
+    ///
+    /// # Errors
+    /// Returns a [`MembershipError`] when structure, chain, roster transition,
+    /// or signature quorum validation fails.
     pub fn accept(&mut self, manifest: MembershipManifestV1) -> Result<(), MembershipError> {
         self.validate_structure(&manifest)?;
         match self.current.as_ref() {
@@ -89,14 +121,17 @@ impl MembershipVerifier {
         Ok(())
     }
 
+    /// Returns the currently accepted manifest, or `None` before the first acceptance.
     pub fn current(&self) -> Option<&MembershipManifestV1> {
         self.current.as_ref()
     }
 
+    /// Returns the canonical hash of the accepted manifest, if one exists.
     pub fn current_hash(&self) -> Option<String> {
         self.current.as_ref().map(canonical_hash)
     }
 
+    /// Returns the active signature threshold from the manifest or genesis trust.
     pub fn threshold(&self) -> usize {
         self.current
             .as_ref()
@@ -105,6 +140,7 @@ impl MembershipVerifier {
             })
     }
 
+    /// Returns the active roster size from the manifest or genesis trust.
     pub fn member_count(&self) -> usize {
         self.current
             .as_ref()
@@ -113,12 +149,17 @@ impl MembershipVerifier {
             })
     }
 
+    /// Checks whether `member` is authorized by the current roster and has `public_key`.
     pub fn is_member(&self, member: &str, public_key: &str) -> bool {
         self.authorized_keys()
             .get(member)
             .is_some_and(|expected| expected == public_key)
     }
 
+    /// Returns member IDs mapped to their authorized root public keys.
+    ///
+    /// Before a manifest is accepted, the map is built from the selected genesis
+    /// trust plane; afterward it reflects the current manifest roster.
     pub fn authorized_keys(&self) -> HashMap<String, String> {
         match self.current.as_ref() {
             Some(manifest) => manifest
@@ -305,7 +346,8 @@ fn validate_manifest_members(
     Ok(())
 }
 
-fn validate_onion_endpoint(endpoint: &str) -> Result<(), MembershipError> {
+/// Accepts only HTTPS v3 onion URLs without credentials, paths, query, or fragment.
+pub fn validate_onion_endpoint(endpoint: &str) -> Result<(), MembershipError> {
     let url = Url::parse(endpoint).map_err(|_| MembershipError::InvalidEndpoint)?;
     if url.scheme() != "https"
         || url.username() != ""

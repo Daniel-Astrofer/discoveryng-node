@@ -1,7 +1,7 @@
 use async_trait::async_trait;
 
-use crate::chain::Observation;
-use crate::error::LedgerError;
+use crate::consensus::chain::Observation;
+use crate::domain::error::LedgerError;
 
 // ---------------------------------------------------------------------------
 // ChainObserverPort

@@ -3,10 +3,15 @@ use serde::{Deserialize, Serialize};
 /// Classifies an account within the double-entry chart of accounts.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum AccountClass {
+    /// Resource controlled by the platform or owed to it.
     Asset,
+    /// Amount owed by the platform to users or other parties.
     Liability,
+    /// Residual platform ownership or retained earnings.
     Equity,
+    /// Cost incurred while operating the platform.
     Expense,
+    /// Income collected by the platform.
     Revenue,
 }
 

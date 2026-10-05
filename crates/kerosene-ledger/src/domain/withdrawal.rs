@@ -4,8 +4,8 @@ use std::sync::Mutex;
 use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
 
-use crate::error::LedgerError;
-use crate::settlement::{PsbtCommitment, SettlementAuthorization};
+use crate::domain::error::LedgerError;
+use crate::domain::settlement::{PsbtCommitment, SettlementAuthorization};
 
 // ---------------------------------------------------------------------------
 // WithdrawalStatus

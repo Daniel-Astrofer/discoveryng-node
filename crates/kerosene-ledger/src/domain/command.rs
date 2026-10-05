@@ -69,7 +69,7 @@ impl BalanceCommand {
         amount_sats: u64,
         epoch: u64,
     ) -> Self {
-        let cmd = Self {
+        Self {
             command_id: command_id.into(),
             account_id: account_id.into(),
             expected_version,
@@ -77,8 +77,7 @@ impl BalanceCommand {
             amount_sats,
             epoch,
             payload_hash: String::new(),
-        };
-        cmd
+        }
     }
 }
 

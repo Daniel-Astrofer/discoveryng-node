@@ -1,27 +1,34 @@
-use std::fs;
-use std::path::{Path, PathBuf};
-
-use async_trait::async_trait;
 use serde::{Deserialize, Serialize};
-use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "SCREAMING_SNAKE_CASE")]
+/// Ordered stages a node must complete before it can participate as active.
 pub enum LifecycleState {
+    /// Runtime exists but identity setup has not completed.
     Created,
+    /// Local identity and signing material are ready.
     IdentityReady,
+    /// Required transport endpoints are configured and available.
     TransportReady,
+    /// Peer discovery is in progress.
     Discovering,
+    /// A peer identity has been authenticated.
     Authenticated,
+    /// Membership proofs and admission policy have been verified.
     MemberVerified,
+    /// State synchronization is in progress.
     Syncing,
+    /// The synchronized snapshot has passed integrity verification.
     StateVerified,
+    /// The node satisfies eligibility requirements but is not yet active.
     Eligible,
+    /// The node is admitted to active participation.
     Active,
 }
 
 impl LifecycleState {
+    /// Returns the only legal next lifecycle stage, or `None` at the terminal stage.
     pub const fn next(self) -> Option<Self> {
         match self {
             Self::Created => Some(Self::IdentityReady),
@@ -39,28 +46,51 @@ impl LifecycleState {
 }
 
 #[derive(Debug, Error, PartialEq, Eq)]
+/// Failures encountered while advancing lifecycle or verifying/persisting state.
 pub enum SyncError {
     #[error("invalid lifecycle transition from {from:?} to {to:?}")]
+    /// A requested transition skips or reverses a required lifecycle stage.
     InvalidTransition {
+        /// Current lifecycle stage.
         from: LifecycleState,
+        /// Requested lifecycle stage.
         to: LifecycleState,
     },
     #[error("snapshot state root mismatch")]
+    /// Snapshot bytes do not hash to the declared state root.
     StateRootMismatch,
     #[error("lifecycle persistence failed: {0}")]
+    /// Filesystem read or write failed while persisting lifecycle state.
     Io(String),
     #[error("lifecycle persistence is invalid: {0}")]
+    /// Persisted lifecycle bytes could not be decoded as the lifecycle format.
     Json(String),
     #[error("state synchronization failed: {0}")]
+    /// A synchronizer could not retrieve or reconcile the node state.
     Synchronization(String),
 }
 
+impl From<std::io::Error> for SyncError {
+    fn from(error: std::io::Error) -> Self {
+        Self::Io(error.to_string())
+    }
+}
+
+impl From<serde_json::Error> for SyncError {
+    fn from(error: serde_json::Error) -> Self {
+        Self::Json(error.to_string())
+    }
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
+/// Persistable lifecycle cursor; transitions are checked by [`Lifecycle::advance`].
 pub struct Lifecycle {
+    /// Current stage in the node admission and synchronization sequence.
     state: LifecycleState,
 }
 
 impl Default for Lifecycle {
+    /// Starts a new node at [`LifecycleState::Created`].
     fn default() -> Self {
         Self {
             state: LifecycleState::Created,
@@ -69,10 +99,16 @@ impl Default for Lifecycle {
 }
 
 impl Lifecycle {
+    /// Returns the current admission stage.
     pub fn state(&self) -> LifecycleState {
         self.state
     }
 
+    /// Advances exactly one stage, rejecting skipped, repeated, or backward moves.
+    ///
+    /// # Errors
+    /// Returns [`SyncError::InvalidTransition`] unless `target` equals the
+    /// immediate successor of the current state.
     pub fn advance(&mut self, target: LifecycleState) -> Result<(), SyncError> {
         if self.state.next() != Some(target) {
             return Err(SyncError::InvalidTransition {
@@ -83,63 +119,6 @@ impl Lifecycle {
         self.state = target;
         Ok(())
     }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct StateSnapshot {
-    pub epoch: u64,
-    pub bytes: Vec<u8>,
-    pub state_root: String,
-}
-
-impl StateSnapshot {
-    pub fn verify(&self) -> Result<(), SyncError> {
-        let actual = hex::encode(Sha256::digest(&self.bytes));
-        if actual != self.state_root {
-            return Err(SyncError::StateRootMismatch);
-        }
-        Ok(())
-    }
-}
-
-#[async_trait]
-pub trait StateSynchronizer: Send + Sync {
-    async fn synchronize(&self) -> Result<StateSnapshot, SyncError>;
-}
-
-pub struct LifecycleStore {
-    path: PathBuf,
-}
-
-impl LifecycleStore {
-    pub fn new(path: impl Into<PathBuf>) -> Self {
-        Self { path: path.into() }
-    }
-
-    pub fn load(&self) -> Result<Lifecycle, SyncError> {
-        if !self.path.exists() {
-            return Ok(Lifecycle::default());
-        }
-        let bytes = fs::read(&self.path).map_err(|error| SyncError::Io(error.to_string()))?;
-        serde_json::from_slice(&bytes).map_err(|error| SyncError::Json(error.to_string()))
-    }
-
-    pub fn save(&self, lifecycle: &Lifecycle) -> Result<(), SyncError> {
-        if let Some(parent) = self.path.parent() {
-            fs::create_dir_all(parent).map_err(|error| SyncError::Io(error.to_string()))?;
-        }
-        let temporary = temporary_path(&self.path);
-        let bytes =
-            serde_json::to_vec(lifecycle).map_err(|error| SyncError::Json(error.to_string()))?;
-        fs::write(&temporary, bytes).map_err(|error| SyncError::Io(error.to_string()))?;
-        fs::rename(temporary, &self.path).map_err(|error| SyncError::Io(error.to_string()))
-    }
-}
-
-fn temporary_path(path: &Path) -> PathBuf {
-    let mut temporary = path.as_os_str().to_owned();
-    temporary.push(".tmp");
-    temporary.into()
 }
 
 #[cfg(test)]
@@ -157,29 +136,5 @@ mod tests {
         lifecycle.advance(LifecycleState::TransportReady).unwrap();
         lifecycle.advance(LifecycleState::Discovering).unwrap();
         assert!(lifecycle.advance(LifecycleState::MemberVerified).is_err());
-    }
-
-    #[test]
-    fn state_root_is_verified_before_state_can_be_accepted() {
-        let bytes = b"deterministic-state".to_vec();
-        let snapshot = StateSnapshot {
-            epoch: 7,
-            state_root: hex::encode(Sha256::digest(&bytes)),
-            bytes,
-        };
-        snapshot.verify().unwrap();
-        let mut corrupt = snapshot;
-        corrupt.bytes.push(0);
-        assert_eq!(corrupt.verify(), Err(SyncError::StateRootMismatch));
-    }
-
-    #[test]
-    fn lifecycle_survives_restart() {
-        let directory = tempfile::tempdir().unwrap();
-        let store = LifecycleStore::new(directory.path().join("lifecycle.db"));
-        let mut lifecycle = Lifecycle::default();
-        lifecycle.advance(LifecycleState::IdentityReady).unwrap();
-        store.save(&lifecycle).unwrap();
-        assert_eq!(store.load().unwrap().state(), LifecycleState::IdentityReady);
     }
 }

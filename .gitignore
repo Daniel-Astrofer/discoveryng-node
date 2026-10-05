@@ -4,6 +4,5 @@
 .env
 .env.*
 .smart_build_state.json
-target/
 peer-store/
 *.key

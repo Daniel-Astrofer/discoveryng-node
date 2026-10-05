@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::error::LedgerError;
+use crate::domain::error::LedgerError;
 
 /// Per-account versioned state tracker.
 ///

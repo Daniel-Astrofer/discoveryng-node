@@ -5,12 +5,15 @@ on:
     types: [published]
 
 permissions:
-  contents: write
-  id-token: write
-  attestations: write
+  contents: read
 
 jobs:
   release:
+    permissions:
+      contents: write # Required to upload assets to the published release.
+      id-token: write # Required for keyless signing and provenance.
+      attestations: write # Required to publish build provenance.
+      artifact-metadata: write # Required to associate provenance with artifacts.
     uses: Daniel-Astrofer/.github/.github/workflows/rust-release.yml@c20b6773eaf68590ac128403c6959e0c758af1e4
     with:
       package: kerosene-rsctl

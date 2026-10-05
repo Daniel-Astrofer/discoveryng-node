@@ -1,7 +1,4 @@
 //! Deterministic membership domain facade.
-pub mod domain {
-    mod membership;
-    pub use membership::*;
-}
+pub mod domain;
 
 pub use domain::*;

@@ -1,7 +1,7 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::error::LedgerError;
+use crate::domain::error::LedgerError;
 
 // ---------------------------------------------------------------------------
 // OnchainState — UTXO lifecycle state machine
@@ -45,7 +45,9 @@ pub enum OnchainState {
 /// Identifies a specific UTXO by transaction ID and output index.
 #[derive(Debug, Clone, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub struct OutPoint {
+    /// Transaction ID containing the output.
     pub txid: String,
+    /// Zero-based output index within the transaction.
     pub vout: u32,
 }
 
@@ -160,12 +162,19 @@ impl UtxoEntry {
 /// Types of observations the chain observer can produce.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum ChainObservationType {
+    /// A transaction has been seen in the mempool or a block.
     TransactionSeen,
+    /// A transaction was replaced by a higher-fee transaction.
     TransactionReplaced,
+    /// A specific output was detected and added to the tracked set.
     UtxoDetected,
+    /// A tracked output reached the observer's confirmation threshold.
     UtxoConfirmed,
+    /// A tracked output was consumed by a spending transaction.
     UtxoSpent,
+    /// A previously accepted block was disconnected from the active chain.
     BlockDisconnected,
+    /// The observer detected a chain reorganization affecting tracked state.
     ChainReorganization,
 }
 
@@ -176,12 +185,19 @@ pub enum ChainObservationType {
 /// A single observation from the chain observer.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Observation {
+    /// Stable identifier used to deduplicate this observer event.
     pub observation_id: String,
+    /// Kind of chain event represented by this observation.
     pub observation_type: ChainObservationType,
+    /// Output affected by the event.
     pub outpoint: OutPoint,
+    /// Value of the output in satoshis.
     pub value_sats: u64,
+    /// Address or script associated with the output.
     pub address: String,
+    /// Confirmation block height, absent while unconfirmed.
     pub block_height: Option<u64>,
+    /// Time bucket when the observer first recorded the event.
     pub detected_at_bucket: u64,
 }
 
@@ -192,6 +208,7 @@ pub struct Observation {
 /// Aggregated view of all UTXO entries with a Merkle-like root hash.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct UtxoSet {
+    /// Entries included in the set and its computed root.
     pub entries: Vec<UtxoEntry>,
     /// Merkle-like root of all UTXO entries for state root computation.
     pub root_hash: String,
@@ -222,6 +239,11 @@ impl UtxoSet {
 pub struct UtxoTransitionGate;
 
 impl UtxoTransitionGate {
+    /// Checks whether a UTXO may move from its current state to `target`.
+    ///
+    /// # Errors
+    /// Returns [`LedgerError::InvalidUtxoTransition`] when the transition is
+    /// not one of the lifecycle edges documented on [`OnchainState`].
     pub fn validate_transition(
         current: OnchainState,
         target: OnchainState,
@@ -276,16 +298,15 @@ impl ReorgHandler {
 
         // Mark affected UTXOs as Reorged
         for utxo in utxos.iter_mut() {
-            if disconnected_set.contains(&utxo.outpoint.txid) {
-                if utxo.state == OnchainState::Confirming
+            if disconnected_set.contains(&utxo.outpoint.txid)
+                && (utxo.state == OnchainState::Confirming
                     || utxo.state == OnchainState::Spendable
-                    || utxo.state == OnchainState::FinalizedByPolicy
-                {
-                    utxo.state = OnchainState::Reorged;
-                    utxo.block_height = None;
-                    utxo.confirmed_at_bucket = None;
-                    affected.push(utxo.canonical_key());
-                }
+                    || utxo.state == OnchainState::FinalizedByPolicy)
+            {
+                utxo.state = OnchainState::Reorged;
+                utxo.block_height = None;
+                utxo.confirmed_at_bucket = None;
+                affected.push(utxo.canonical_key());
             }
         }
 
@@ -367,7 +388,7 @@ pub fn apply_rbf_replacement(
 /// - option flag (1 byte) + data for Option fields
 pub fn compute_utxo_root(utxos: &[UtxoEntry]) -> String {
     let mut sorted = utxos.to_vec();
-    sorted.sort_by(|a, b| a.canonical_key().cmp(&b.canonical_key()));
+    sorted.sort_by_key(|a| a.canonical_key());
 
     let mut item_hashes: Vec<[u8; 32]> = Vec::with_capacity(sorted.len());
     for utxo in &sorted {
@@ -456,14 +477,18 @@ fn encode_string_fn(s: &str) -> Vec<u8> {
 /// Payload for a DetectUtxo command, encoded in authorization_commitment.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DetectUtxoPayload {
+    /// Value of the detected output in satoshis.
     pub value_sats: u64,
+    /// Address or script locking the detected output.
     pub address: String,
 }
 
 /// Payload for an ApplyChainReorganization command.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ReorgPayload {
+    /// Transaction IDs belonging to blocks removed from the active chain.
     pub disconnected_txids: Vec<String>,
+    /// Outputs observed on the replacement active chain.
     pub new_utxos: Vec<UtxoEntry>,
 }
 
@@ -699,16 +724,16 @@ mod tests {
     #[test]
     fn reorg_re_detect_after_reorg() {
         let op = OutPoint::new("tx1", 0);
-        let mut utxos = vec![UtxoEntry {
+        let mut utxo = UtxoEntry {
             state: OnchainState::Reorged,
             ..UtxoEntry::new_seen(op, 1000, "addr", 10)
-        }];
+        };
 
         // Re-detect: transition Reorged → Seen
-        UtxoTransitionGate::validate_transition(utxos[0].state, OnchainState::Seen).unwrap();
-        utxos[0].state = OnchainState::Seen;
+        UtxoTransitionGate::validate_transition(utxo.state, OnchainState::Seen).unwrap();
+        utxo.state = OnchainState::Seen;
 
-        assert_eq!(utxos[0].state, OnchainState::Seen);
+        assert_eq!(utxo.state, OnchainState::Seen);
     }
 
     // -----------------------------------------------------------------------

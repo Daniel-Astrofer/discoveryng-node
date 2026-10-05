@@ -1,6 +1,6 @@
-use crate::account::StandardAccount;
-use crate::double_entry::{InMemoryLedger, JournalEntry, LedgerPort, Posting};
-use crate::error::LedgerError;
+use crate::domain::account::StandardAccount;
+use crate::domain::double_entry::{InMemoryLedger, JournalEntry, LedgerPort, Posting};
+use crate::domain::error::LedgerError;
 
 /// Helper: builds a valid genesis journal entry that transfers 1000 sats
 /// from AssetCustodiedBtc (debit) to LiabilityUserBalances (credit).

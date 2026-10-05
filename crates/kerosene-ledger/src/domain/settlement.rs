@@ -1,10 +1,10 @@
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::certificate::QuorumCertificate;
-use crate::error::LedgerError;
-use crate::reservation::Reservation;
-use crate::state_machine::LedgerState;
+use crate::consensus::certificate::QuorumCertificate;
+use crate::domain::error::LedgerError;
+use crate::domain::reservation::Reservation;
+use crate::domain::state_machine::LedgerState;
 
 // ---------------------------------------------------------------------------
 // PsbtCommitment
@@ -320,11 +320,7 @@ impl SettlementValidator {
         current_epoch: u64,
         max_epoch_drift: u64,
     ) -> Result<(), LedgerError> {
-        let drift = if auth_epoch >= current_epoch {
-            auth_epoch - current_epoch
-        } else {
-            current_epoch - auth_epoch
-        };
+        let drift = auth_epoch.abs_diff(current_epoch);
         if drift > max_epoch_drift {
             return Err(LedgerError::InvalidStateTransition(format!(
                 "epoch drift {} exceeds max allowed {}",
@@ -362,30 +358,55 @@ impl SettlementValidator {
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
 pub enum VaultVerificationError {
     #[error("invalid certificate: {0}")]
+    /// Authorization certificate or its signed metadata failed validation.
     InvalidCertificate(String),
 
     #[error("intent already consumed: {0}")]
+    /// The intent commitment has already been used by a previous settlement.
     IntentAlreadyConsumed(String),
 
     #[error("epoch expired: auth_epoch {auth_epoch}, max_drift {max_drift}")]
-    EpochExpired { auth_epoch: u64, max_drift: u64 },
+    /// Authorization epoch is outside the policy's permitted drift.
+    EpochExpired {
+        /// Epoch recorded in the authorization.
+        auth_epoch: u64,
+        /// Maximum permitted distance from the current/certificate epoch.
+        max_drift: u64,
+    },
 
     #[error("PSBT hash mismatch: expected {expected_hash}, actual {actual_hash}")]
+    /// Actual PSBT bytes do not match the committed digest.
     PsbtMismatch {
+        /// Digest bound by the authorization.
         expected_hash: String,
+        /// Digest computed from submitted PSBT bytes.
         actual_hash: String,
     },
 
     #[error("fee {fee_sats} exceeds policy max {max_fee_sats}")]
-    FeeExceedsPolicy { fee_sats: u64, max_fee_sats: u64 },
+    /// Computed transaction fee exceeds the settlement policy limit.
+    FeeExceedsPolicy {
+        /// Fee computed from the PSBT and input values.
+        fee_sats: u64,
+        /// Maximum fee allowed by policy.
+        max_fee_sats: u64,
+    },
 
     #[error("authorization expired at {expires_at}, current time {now}")]
-    AuthorizationExpired { expires_at: u64, now: u64 },
+    /// Authorization validity window has elapsed.
+    AuthorizationExpired {
+        /// Bucket when the authorization expired.
+        expires_at: u64,
+        /// Current bucket used during verification.
+        now: u64,
+    },
 
     #[error("nonce reused: {0}")]
+    /// Anti-replay store reports that the authorization nonce was consumed earlier.
     NonceReused(String),
 
     #[error("destination not allowed: {0}")]
+    /// A PSBT output destination is absent from the settlement allowlist.
     DestinationNotAllowed(String),
 }
 
@@ -415,6 +436,7 @@ impl VaultAuthorizationVerifier {
     /// 4. PSBT: matches the committed hash
     /// 5. Outputs: match expected values from auth
     /// 6. Fee: within policy bounds (requires PSBT byte analysis)
+    #[allow(clippy::too_many_arguments)]
     pub fn verify(
         auth: &SettlementAuthorization,
         psbt_bytes: &[u8],
@@ -456,11 +478,7 @@ impl VaultAuthorizationVerifier {
 
         // 5. Verify epoch drift
         let cert_epoch = auth.quorum_certificate.epoch;
-        let drift = if cert_epoch >= auth.epoch {
-            cert_epoch - auth.epoch
-        } else {
-            auth.epoch - cert_epoch
-        };
+        let drift = cert_epoch.abs_diff(auth.epoch);
         if drift > policy.max_epoch_drift {
             return Err(VaultVerificationError::EpochExpired {
                 auth_epoch: auth.epoch,

@@ -15,15 +15,22 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-fuzz-targets:
-    runs-on: ubuntu-latest
+    name: Build fuzz targets
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install fuzz toolchain
         run: |
-          rustup toolchain install nightly --profile minimal
-          cargo +nightly install cargo-fuzz --locked
+          rustup toolchain install nightly-2026-07-30 --profile minimal
+          cargo +nightly-2026-07-30 install cargo-fuzz --version 0.13.2 --locked
       - name: Compile PeerHello and AdmissionRequest fuzzers
         working-directory: fuzz
-        run: cargo +nightly fuzz build
+        run: cargo +nightly-2026-07-30 fuzz build

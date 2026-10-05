@@ -3,9 +3,9 @@ use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::error::LedgerError;
-use crate::state_machine::LedgerState;
-use crate::state_root::compute_state_root;
+use crate::domain::error::LedgerError;
+use crate::domain::state_machine::LedgerState;
+use crate::integrity::state_root::compute_state_root;
 
 // ---------------------------------------------------------------------------
 // NodeSignature
@@ -54,6 +54,7 @@ pub struct QuorumCertificate {
 
 impl QuorumCertificate {
     /// Creates a new SINGLE-mode quorum certificate (self-signed).
+    #[allow(clippy::too_many_arguments)]
     pub fn single_node(
         cluster_id: impl Into<String>,
         epoch: u64,
@@ -336,7 +337,9 @@ impl Checkpoint {
         Self {
             sequence: state.version.saturating_sub(1),
             state_root: compute_state_root(state),
-            membership_hash: crate::state_root::compute_membership_hash(&state.membership),
+            membership_hash: crate::integrity::state_root::compute_membership_hash(
+                &state.membership,
+            ),
             committed_commands_root,
             timestamp_bucket,
             quorum_certificate,
@@ -355,7 +358,7 @@ impl Checkpoint {
         }
 
         let computed_membership_hash =
-            crate::state_root::compute_membership_hash(&state.membership);
+            crate::integrity::state_root::compute_membership_hash(&state.membership);
         if self.membership_hash != computed_membership_hash {
             return Err(LedgerError::InvariantViolation(format!(
                 "membership hash mismatch: expected {computed_membership_hash}, got {}",
@@ -436,7 +439,7 @@ impl CertifiedSnapshot {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state_machine::{LedgerState, MembershipView};
+    use crate::domain::state_machine::{LedgerState, MembershipView};
 
     fn test_membership() -> MembershipView {
         MembershipView::single_node("cluster-1", "node-1")
@@ -777,7 +780,7 @@ mod tests {
         // Modify the state
         state
             .accounts
-            .push(crate::account_state::AccountState::new("alice"));
+            .push(crate::domain::account_state::AccountState::new("alice"));
         assert!(cp.verify(&state).is_err());
     }
 

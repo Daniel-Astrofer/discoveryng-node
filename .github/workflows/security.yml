@@ -7,7 +7,10 @@ on:
 
 permissions:
   contents: read
-  pull-requests: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
 
 jobs:
   compatibility:
@@ -28,9 +31,11 @@ jobs:
 
   tests:
     name: Discovery and membership tests
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install pinned Rust toolchain
         run: rustup toolchain install 1.88 --profile minimal
       - name: Run workspace tests
@@ -38,15 +43,21 @@ jobs:
 
   membership-coverage:
     name: Membership coverage
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
       - name: Install coverage toolchain
         run: |
           rustup toolchain install 1.88 --profile minimal --component llvm-tools-preview
-          cargo +1.88 install cargo-llvm-cov --locked
+          cargo +1.88 install cargo-llvm-cov --version 0.9.0 --locked
       - name: Enforce membership coverage
         run: cargo +1.88 llvm-cov --package kerosene-membership --fail-under-lines 80
 
   security:
+    permissions:
+      contents: read
+      pull-requests: read # Required by dependency review on pull requests.
+      security-events: write # Required to upload SARIF security findings.
     uses: Daniel-Astrofer/.github/.github/workflows/security-scan.yml@2552ff2125c2d72accebe93804b8e139a52ded13

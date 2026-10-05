@@ -4,23 +4,25 @@ use async_trait::async_trait;
 use serde::Serialize;
 use sled::Db;
 
-use crate::account_state::AccountState;
-use crate::certificate::CertifiedSnapshot;
-use crate::chain::{OnchainState, OutPoint, UtxoEntry};
-use crate::command::{BalanceCommand, InternalTransferCommand};
-use crate::error::LedgerError;
-use crate::idempotency::IdempotencyRecord;
-use crate::membership::{validate_role_transition, MembershipStore, NodeMembership, NodeRole};
-use crate::nonce::NonceChecker;
-use crate::reservation::{Reservation, ReservationState};
-use crate::settlement::{
+use crate::consensus::certificate::CertifiedSnapshot;
+use crate::consensus::chain::{OnchainState, OutPoint, UtxoEntry};
+use crate::consensus::membership::{
+    validate_role_transition, MembershipStore, NodeMembership, NodeRole,
+};
+use crate::domain::account_state::AccountState;
+use crate::domain::command::{BalanceCommand, InternalTransferCommand};
+use crate::domain::error::LedgerError;
+use crate::domain::idempotency::IdempotencyRecord;
+use crate::domain::nonce::NonceChecker;
+use crate::domain::reservation::{Reservation, ReservationState};
+use crate::domain::settlement::{
     NonceChecker as SyncNonceChecker, PsbtCommitment, SettlementAuthorization,
 };
-use crate::snapshot::SnapshotStore;
-use crate::state_machine::LedgerState;
-use crate::traits::{IdempotencyStore, ReservationStore, VersionedAccountStore};
-use crate::utxo_store::UtxoStore;
-use crate::withdrawal::{WithdrawalRecord, WithdrawalStatus, WithdrawalStore};
+use crate::domain::state_machine::LedgerState;
+use crate::domain::withdrawal::{WithdrawalRecord, WithdrawalStatus, WithdrawalStore};
+use crate::ports::snapshot::SnapshotStore;
+use crate::ports::traits::{IdempotencyStore, ReservationStore, VersionedAccountStore};
+use crate::ports::utxo_store::UtxoStore;
 
 // ---------------------------------------------------------------------------
 // Helper: serialise/deserialise with JSON via sled
@@ -171,10 +173,16 @@ impl VersionedAccountStore for SledVersionedAccountStore {
         }
 
         match cmd.operation {
-            crate::command::BalanceOperation::Credit => state.apply_credit(cmd.amount_sats)?,
-            crate::command::BalanceOperation::Debit => state.apply_debit(cmd.amount_sats)?,
-            crate::command::BalanceOperation::Reserve => state.apply_reserve(cmd.amount_sats)?,
-            crate::command::BalanceOperation::ReleaseReservation => {
+            crate::domain::command::BalanceOperation::Credit => {
+                state.apply_credit(cmd.amount_sats)?
+            }
+            crate::domain::command::BalanceOperation::Debit => {
+                state.apply_debit(cmd.amount_sats)?
+            }
+            crate::domain::command::BalanceOperation::Reserve => {
+                state.apply_reserve(cmd.amount_sats)?
+            }
+            crate::domain::command::BalanceOperation::ReleaseReservation => {
                 state.apply_release_reservation(cmd.amount_sats)?
             }
         }
@@ -263,6 +271,7 @@ pub struct SledReservationStore {
 }
 
 impl SledReservationStore {
+    /// Wraps a shared sled database as a persistent reservation store.
     pub fn new(db: Arc<Db>) -> Self {
         Self { db }
     }
@@ -378,6 +387,7 @@ pub struct SledIdempotencyStore {
 }
 
 impl SledIdempotencyStore {
+    /// Wraps a shared sled database as a durable command idempotency store.
     pub fn new(db: Arc<Db>) -> Self {
         Self { db }
     }
@@ -434,6 +444,7 @@ pub struct SledUtxoStore {
 }
 
 impl SledUtxoStore {
+    /// Wraps a shared sled database as a persistent UTXO store.
     pub fn new(db: Arc<Db>) -> Self {
         Self { db }
     }
@@ -450,7 +461,7 @@ impl SledUtxoStore {
             .filter_map(|result| result.ok())
             .filter_map(|(_, value)| deserialize(&value).ok())
             .collect();
-        entries.sort_by(|a, b| a.canonical_key().cmp(&b.canonical_key()));
+        entries.sort_by_key(|a| a.canonical_key());
         Ok(entries)
     }
 }
@@ -489,7 +500,7 @@ impl UtxoStore for SledUtxoStore {
     async fn list_by_state(&self, state: OnchainState) -> Result<Vec<UtxoEntry>, LedgerError> {
         let entries = self.list_all_entries()?;
         let mut result: Vec<UtxoEntry> = entries.into_iter().filter(|e| e.state == state).collect();
-        result.sort_by(|a, b| a.canonical_key().cmp(&b.canonical_key()));
+        result.sort_by_key(|a| a.canonical_key());
         Ok(result)
     }
 
@@ -517,7 +528,7 @@ impl UtxoStore for SledUtxoStore {
             }
         };
 
-        crate::chain::UtxoTransitionGate::validate_transition(entry.state, new_state)?;
+        crate::consensus::chain::UtxoTransitionGate::validate_transition(entry.state, new_state)?;
         entry.state = new_state;
 
         self.db
@@ -603,7 +614,7 @@ impl UtxoStore for SledUtxoStore {
 
     async fn compute_utxo_root_hash(&self) -> Result<String, LedgerError> {
         let entries = self.list_all_entries()?;
-        Ok(crate::chain::compute_utxo_root(&entries))
+        Ok(crate::consensus::chain::compute_utxo_root(&entries))
     }
 }
 
@@ -617,6 +628,7 @@ pub struct SledWithdrawalStore {
 }
 
 impl SledWithdrawalStore {
+    /// Wraps a shared sled database as a persistent withdrawal store.
     pub fn new(db: Arc<Db>) -> Self {
         Self { db }
     }
@@ -783,6 +795,7 @@ pub struct SledSnapshotStore {
 }
 
 impl SledSnapshotStore {
+    /// Wraps a shared sled database as a persistent certified snapshot store.
     pub fn new(db: Arc<Db>) -> Self {
         Self { db }
     }
@@ -852,7 +865,7 @@ impl SnapshotStore for SledSnapshotStore {
             LedgerError::InvalidSignature(format!("failed to deserialize snapshot state: {}", e))
         })?;
 
-        let computed_root = crate::state_root::compute_state_root(&state);
+        let computed_root = crate::integrity::state_root::compute_state_root(&state);
         if computed_root != snapshot.state_root {
             return Err(LedgerError::StateRootMismatch {
                 expected: computed_root,
@@ -874,6 +887,7 @@ pub struct SledMembershipStore {
 }
 
 impl SledMembershipStore {
+    /// Wraps a shared sled database as a persistent node membership store.
     pub fn new(db: Arc<Db>) -> Self {
         Self { db }
     }
@@ -1061,7 +1075,7 @@ impl SledLedgerDb {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::chain::OutPoint;
+    use crate::consensus::chain::OutPoint;
     use tempfile::TempDir;
 
     fn create_db() -> (TempDir, SledLedgerDb) {
@@ -1136,7 +1150,7 @@ mod tests {
             "c1",
             "alice",
             0,
-            crate::command::BalanceOperation::Credit,
+            crate::domain::command::BalanceOperation::Credit,
             100,
             1,
         );
@@ -1153,7 +1167,7 @@ mod tests {
             "c1",
             "alice",
             0,
-            crate::command::BalanceOperation::Credit,
+            crate::domain::command::BalanceOperation::Credit,
             100,
             1,
         );
@@ -1163,7 +1177,7 @@ mod tests {
             "c2",
             "alice",
             0,
-            crate::command::BalanceOperation::Credit,
+            crate::domain::command::BalanceOperation::Credit,
             50,
             1,
         );
@@ -1255,10 +1269,10 @@ mod tests {
             "node-1",
         )
         .0;
-        let state = crate::state_machine::LedgerState::empty(
-            crate::state_machine::MembershipView::single_node("cluster-1", "node-1"),
+        let state = crate::domain::state_machine::LedgerState::empty(
+            crate::domain::state_machine::MembershipView::single_node("cluster-1", "node-1"),
         );
-        let state_root = crate::state_root::compute_state_root(&state);
+        let state_root = crate::integrity::state_root::compute_state_root(&state);
         let state_bytes = serde_json::to_vec(&state).unwrap();
 
         let snap = CertifiedSnapshot {

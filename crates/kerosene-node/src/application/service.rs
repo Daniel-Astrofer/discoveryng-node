@@ -1,3 +1,5 @@
+//! Node application service coordinating discovery, membership, and readiness.
+
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -13,43 +15,103 @@ use kerosene_sync::{
 };
 use parking_lot::{Mutex, RwLock};
 use serde::Serialize;
+use thiserror::Error;
+
+#[derive(Debug, Error)]
+/// Failures encountered by the node coordination service.
+pub enum NodeServiceError {
+    #[error("discovery error: {0}")]
+    Discovery(#[from] DiscoveryError),
+    #[error("membership error: {0}")]
+    Membership(#[from] MembershipError),
+    #[error("lifecycle sync error: {0}")]
+    Sync(#[from] SyncError),
+    #[error("peer store persistence error: {0}")]
+    Storage(String),
+}
 
 #[derive(Clone)]
+/// Coordinates a node's peer authentication, membership, sync, and readiness state.
 pub struct NodeService {
+    /// Shared mutable implementation state used by cloned service handles.
     inner: Arc<NodeServiceInner>,
 }
 
+/// State shared across `NodeService` handles and asynchronous request handlers.
 struct NodeServiceInner {
+    /// Local network-scoped identity used to authenticate peer handshakes.
     identity: Arc<NodeIdentity>,
+    /// Advertised HTTPS onion endpoint for this node.
     endpoint: String,
+    /// Discovery plane whose membership roster authorizes this node.
     plane: DiscoveryPlane,
+    /// Short-lived store of outstanding peer challenge nonces.
     challenges: Arc<ChallengeStore>,
+    /// Validates peer signatures and membership against the current verifier.
     authenticator: PeerAuthenticator,
+    /// Current accepted membership verifier, replaceable after a valid manifest.
     membership: Arc<RwLock<MembershipVerifier>>,
+    /// Durable store for authenticated endpoints and accepted manifests.
     peer_store: Arc<PersistentPeerStore>,
+    /// In-memory lifecycle cursor guarded during transitions.
     lifecycle: Mutex<Lifecycle>,
+    /// Durable lifecycle checkpoint restored during service construction.
     lifecycle_store: LifecycleStore,
+    /// Last-seen times for peers authenticated during the current process.
     active_peers: RwLock<HashMap<String, u64>>,
+    /// Maximum age of an authenticated peer observation before it expires.
     peer_live_window_ms: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
+/// Public readiness projection computed from local lifecycle, membership, and live quorum.
 pub struct Readiness {
+    /// Whether the process can answer the readiness query.
     pub live: bool,
+    /// Whether identity and transport bootstrap has advanced beyond `Created`.
     pub local_ready: bool,
+    /// Whether the local identity appears in the accepted membership roster.
     pub member_ready: bool,
+    /// Whether enough authorized members, including this node, are live.
     pub quorum_ready: bool,
+    /// Whether the node is active and the membership quorum is currently satisfied.
     pub financial_ready: bool,
+    /// Bank or vault discovery plane used to compute this view.
     pub plane: DiscoveryPlane,
+    /// Current monotonic admission and synchronization stage.
     pub lifecycle: LifecycleState,
+    /// Stable operational label derived from lifecycle and quorum conditions.
     pub operational_state: &'static str,
+    /// Number of members in the currently verified roster.
     pub verified_members: usize,
+    /// Number of currently live authorized members, including local member if valid.
     pub live_members: usize,
+    /// Minimum live member count required for quorum.
     pub required_threshold: usize,
+    /// Canonical hash of the accepted membership manifest, if present.
     pub manifest_hash: Option<String>,
 }
 
 impl NodeService {
+    /// Creates the node service and advances persisted local bootstrap stages.
+    ///
+    /// The endpoint is validated before constructing challenge authentication;
+    /// restored lifecycle state is advanced through identity and transport setup
+    /// and persisted before the service is returned.
+    ///
+    /// # Errors
+    /// Returns a string describing an invalid endpoint, lifecycle load/transition,
+    /// or lifecycle persistence failure.
+    ///
+    /// # Parameters
+    /// * `identity` - this node's durable network identity.
+    /// * `endpoint` - externally advertised HTTPS v3 onion endpoint.
+    /// * `plane` - membership plane served by this node.
+    /// * `membership` - verifier restored from genesis and persisted manifests.
+    /// * `peer_store` - durable store for manifests and authenticated endpoints.
+    /// * `lifecycle_store` - filesystem checkpoint for startup lifecycle.
+    /// * `challenge_ttl_ms` - maximum challenge age accepted during handshake.
+    /// * `peer_live_window_ms` - maximum last-seen age counted as live.
     #[allow(clippy::too_many_arguments)]
     pub fn new(
         identity: Arc<NodeIdentity>,
@@ -60,9 +122,8 @@ impl NodeService {
         lifecycle_store: LifecycleStore,
         challenge_ttl_ms: u64,
         peer_live_window_ms: u64,
-    ) -> Result<Self, String> {
-        kerosene_discovery::validate_onion_endpoint(&endpoint)
-            .map_err(|error| error.to_string())?;
+    ) -> Result<Self, NodeServiceError> {
+        kerosene_discovery::validate_onion_endpoint(&endpoint)?;
         let membership = Arc::new(RwLock::new(membership));
         let challenges = Arc::new(ChallengeStore::new(challenge_ttl_ms));
         let authenticator = PeerAuthenticator::new(
@@ -72,11 +133,9 @@ impl NodeService {
             challenges.clone(),
             membership.clone(),
         );
-        let mut lifecycle = lifecycle_store.load().map_err(|error| error.to_string())?;
-        bootstrap_local_lifecycle(&mut lifecycle).map_err(|error| error.to_string())?;
-        lifecycle_store
-            .save(&lifecycle)
-            .map_err(|error| error.to_string())?;
+        let mut lifecycle = lifecycle_store.load()?;
+        bootstrap_local_lifecycle(&mut lifecycle)?;
+        lifecycle_store.save(&lifecycle)?;
         Ok(Self {
             inner: Arc::new(NodeServiceInner {
                 identity,
@@ -94,6 +153,10 @@ impl NodeService {
         })
     }
 
+    /// Computes health and quorum readiness after expiring stale peer observations.
+    ///
+    /// Membership count and threshold come from the accepted manifest, falling
+    /// back to genesis trust until a manifest has been accepted.
     pub fn readiness(&self, now_epoch_ms: u64) -> Readiness {
         self.expire_peers(now_epoch_ms);
         let membership = self.inner.membership.read();
@@ -139,10 +202,15 @@ impl NodeService {
         }
     }
 
+    /// Issues a one-time challenge that a connecting peer must sign.
     pub fn issue_challenge(&self, now_epoch_ms: u64) -> String {
         self.inner.challenges.issue(now_epoch_ms)
     }
 
+    /// Authenticates and records a remote peer hello without producing a response.
+    ///
+    /// # Errors
+    /// Rejects self-connections and propagates authentication or peer-store errors.
     pub fn observe_peer(
         &self,
         hello: &PeerHelloV1,
@@ -156,6 +224,10 @@ impl NodeService {
         Ok(())
     }
 
+    /// Authenticates a peer hello and returns this node's signed response hello.
+    ///
+    /// # Errors
+    /// Rejects self-connections and propagates authentication or persistence errors.
     pub fn exchange_hello(
         &self,
         request: &HelloExchangeRequest,
@@ -176,26 +248,38 @@ impl NodeService {
         ))
     }
 
-    pub fn accept_membership(&self, manifest: MembershipManifestV1) -> Result<(), MembershipError> {
+    /// Validates and durably accepts a membership manifest before publishing it locally.
+    ///
+    /// Duplicate current manifests are idempotent. The new verifier state is
+    /// installed only after validation and manifest persistence both succeed.
+    ///
+    /// # Errors
+    /// Returns membership validation or peer-store storage errors.
+    pub fn accept_membership(
+        &self,
+        manifest: MembershipManifestV1,
+    ) -> Result<(), NodeServiceError> {
         let manifest_hash = canonical_hash(&manifest);
         if self.inner.membership.read().current_hash().as_deref() == Some(manifest_hash.as_str()) {
             return Ok(());
         }
         let mut candidate = self.inner.membership.read().clone();
         candidate.accept(manifest.clone())?;
-        self.inner
-            .peer_store
-            .append_manifest(&manifest)
-            .map_err(|_| MembershipError::HashChain)?;
+        self.inner.peer_store.append_manifest(&manifest)?;
         *self.inner.membership.write() = candidate;
         self.activate_if_quorum(now_epoch_ms());
         Ok(())
     }
 
+    /// Returns a clone of the currently accepted manifest, if available.
     pub fn current_manifest(&self) -> Option<MembershipManifestV1> {
         self.inner.membership.read().current().cloned()
     }
 
+    /// Lists durable authenticated peer endpoints for this node's discovery plane.
+    ///
+    /// # Errors
+    /// Returns storage errors while reading the peer store.
     pub fn authenticated_peers(
         &self,
     ) -> Result<Vec<kerosene_discovery::EndpointRecord>, DiscoveryError> {
@@ -204,6 +288,11 @@ impl NodeService {
             .authenticated_endpoints(self.inner.plane)
     }
 
+    /// Fetches a state snapshot and advances lifecycle after verifying its digest.
+    ///
+    /// # Errors
+    /// Propagates synchronization, snapshot-integrity, lifecycle-transition, or
+    /// lifecycle-persistence errors.
     pub async fn synchronize_state(
         &self,
         synchronizer: &dyn StateSynchronizer,
@@ -213,6 +302,13 @@ impl NodeService {
         Ok(snapshot)
     }
 
+    /// Verifies a snapshot and moves the node from `Syncing` through `Eligible`.
+    ///
+    /// Once persisted, current quorum state may promote the node to `Active`.
+    ///
+    /// # Errors
+    /// Returns state-root mismatch, invalid lifecycle transition, or persistence
+    /// errors from the lifecycle store.
     pub fn verify_state_snapshot(&self, snapshot: &StateSnapshot) -> Result<(), SyncError> {
         snapshot.verify()?;
         let mut lifecycle = self.inner.lifecycle.lock();
@@ -230,6 +326,7 @@ impl NodeService {
         Ok(())
     }
 
+    /// Advances lifecycle after a peer is authenticated and local membership is known.
     fn advance_after_authentication(&self) {
         let mut lifecycle = self.inner.lifecycle.lock();
         if lifecycle.state() == LifecycleState::Discovering {
@@ -246,6 +343,10 @@ impl NodeService {
         let _ = self.inner.lifecycle_store.save(&lifecycle);
     }
 
+    /// Persists a peer observation, refreshes its liveness, then reevaluates activation.
+    ///
+    /// # Errors
+    /// Returns peer-store failures before changing the active-peer timestamp map.
     fn record_authenticated_peer(
         &self,
         peer: kerosene_discovery::AuthenticatedPeer,
@@ -264,6 +365,7 @@ impl NodeService {
         Ok(())
     }
 
+    /// Promotes an eligible node to active when the currently computed readiness meets quorum.
     fn activate_if_quorum(&self, now_epoch_ms: u64) {
         let readiness = self.readiness(now_epoch_ms);
         let mut lifecycle = self.inner.lifecycle.lock();
@@ -273,6 +375,7 @@ impl NodeService {
         }
     }
 
+    /// Removes live-peer observations older than the configured liveness window.
     fn expire_peers(&self, now_epoch_ms: u64) {
         self.inner.active_peers.write().retain(|_, last_seen| {
             now_epoch_ms.saturating_sub(*last_seen) <= self.inner.peer_live_window_ms
@@ -280,6 +383,13 @@ impl NodeService {
     }
 }
 
+/// Restores minimum local lifecycle progress for a process that has just booted.
+///
+/// The node is advanced to `Discovering`; authentication, membership, state
+/// verification, and activation remain contingent on runtime protocol events.
+///
+/// # Errors
+/// Returns an invalid-transition error if persisted state cannot advance legally.
 fn bootstrap_local_lifecycle(lifecycle: &mut Lifecycle) -> Result<(), kerosene_sync::SyncError> {
     while matches!(
         lifecycle.state(),
@@ -291,6 +401,7 @@ fn bootstrap_local_lifecycle(lifecycle: &mut Lifecycle) -> Result<(), kerosene_s
     Ok(())
 }
 
+/// Returns the current Unix epoch time in milliseconds, saturating on conversion overflow.
 pub fn now_epoch_ms() -> u64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)

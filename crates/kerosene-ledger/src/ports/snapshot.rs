@@ -3,9 +3,9 @@ use std::sync::Mutex;
 
 use async_trait::async_trait;
 
-use crate::certificate::CertifiedSnapshot;
-use crate::error::LedgerError;
-use crate::state_machine::LedgerState;
+use crate::consensus::certificate::CertifiedSnapshot;
+use crate::domain::error::LedgerError;
+use crate::domain::state_machine::LedgerState;
 
 // ---------------------------------------------------------------------------
 // SnapshotStore trait
@@ -106,7 +106,7 @@ impl SnapshotStore for InMemorySnapshotStore {
         })?;
 
         // Verify the state root matches
-        let computed_root = crate::state_root::compute_state_root(&state);
+        let computed_root = crate::integrity::state_root::compute_state_root(&state);
         if computed_root != snapshot.state_root {
             return Err(LedgerError::StateRootMismatch {
                 expected: computed_root,
@@ -121,7 +121,7 @@ impl SnapshotStore for InMemorySnapshotStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::state_machine::MembershipView;
+    use crate::domain::state_machine::MembershipView;
     use crate::tests::helpers::make_signed_qc;
 
     fn create_test_snapshot(sequence: u64) -> CertifiedSnapshot {
@@ -137,7 +137,7 @@ mod tests {
         );
 
         let state = LedgerState::empty(MembershipView::single_node("cluster-1", "node-1"));
-        let state_root = crate::state_root::compute_state_root(&state);
+        let state_root = crate::integrity::state_root::compute_state_root(&state);
         let state_bytes = serde_json::to_vec(&state).unwrap();
 
         CertifiedSnapshot {
@@ -146,7 +146,9 @@ mod tests {
             sequence,
             state_bytes,
             state_root,
-            membership_hash: crate::state_root::compute_membership_hash(&state.membership),
+            membership_hash: crate::integrity::state_root::compute_membership_hash(
+                &state.membership,
+            ),
             constitution_hash: "const-hash".into(),
             policy_hash: "policy-hash".into(),
             ledger_totals_hash: "totals-hash".into(),
