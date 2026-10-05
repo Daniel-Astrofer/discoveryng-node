@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
 use kerosene_contracts::{
@@ -443,7 +444,6 @@ impl TorHandshakeClient {
         local_identity: &NodeIdentity,
         local_endpoint: &str,
         response_challenge: String,
-        now_epoch_ms: u64,
     ) -> Result<PeerHelloV1, DiscoveryError> {
         validate_onion_endpoint(endpoint)?;
         validate_onion_endpoint(local_endpoint)?;
@@ -459,7 +459,13 @@ impl TorHandshakeClient {
             .await
             .map_err(|error| DiscoveryError::Transport(error.to_string()))?;
         let request = HelloExchangeRequest {
-            hello: local_identity.sign_hello(challenge.challenge, local_endpoint, now_epoch_ms),
+            // Tor circuit construction may take longer than the accepted clock
+            // window. Timestamp only after the remote challenge arrives.
+            hello: local_identity.sign_hello(
+                challenge.challenge,
+                local_endpoint,
+                current_epoch_ms()?,
+            ),
             response_challenge,
         };
         self.client
@@ -491,6 +497,14 @@ impl TorHandshakeClient {
             .await
             .map_err(|error| DiscoveryError::Transport(error.to_string()))
     }
+}
+
+fn current_epoch_ms() -> Result<u64, DiscoveryError> {
+    let elapsed = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_err(|error| DiscoveryError::Transport(error.to_string()))?;
+    u64::try_from(elapsed.as_millis())
+        .map_err(|_| DiscoveryError::Transport("system clock exceeds protocol range".into()))
 }
 
 pub fn manifest_endpoint_records(manifest: &MembershipManifestV1) -> Vec<EndpointRecord> {

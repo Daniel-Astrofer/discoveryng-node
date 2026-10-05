@@ -98,7 +98,7 @@ impl Config {
             genesis_endpoints,
             mirrors,
             observer: env_flag("KEROSENE_DISCOVERY_OBSERVER"),
-            challenge_ttl_ms: integer("KEROSENE_CHALLENGE_TTL_MS", 30_000)?,
+            challenge_ttl_ms: integer("KEROSENE_CHALLENGE_TTL_MS", 300_000)?,
             peer_live_window_ms: integer("KEROSENE_PEER_LIVE_WINDOW_MS", 90_000)?,
             discovery_interval_ms: integer("KEROSENE_DISCOVERY_INTERVAL_MS", 15_000)?,
             ledger_db_path: path("KEROSENE_LEDGER_DB_PATH", "ledger-data"),
@@ -321,18 +321,13 @@ fn spawn_discovery(
                     let now = now_epoch_ms();
                     let response_challenge = service.issue_challenge(now);
                     match client
-                        .exchange(
-                            endpoint,
-                            &identity,
-                            &local_endpoint,
-                            response_challenge,
-                            now,
-                        )
+                        .exchange(endpoint, &identity, &local_endpoint, response_challenge)
                         .await
                     {
                         Ok(hello) => {
+                            let observed_at = now_epoch_ms();
                             let observed = service
-                                .observe_peer(&hello, now)
+                                .observe_peer(&hello, observed_at)
                                 .map_err(|error| error.to_string());
                             if observed.is_ok() {
                                 if let Ok(manifest) = client.fetch_manifest(endpoint).await {
