@@ -305,7 +305,9 @@ fn spawn_discovery(
                     continue;
                 }
             };
-            for candidate in candidates {
+            for candidate in candidates.into_iter().filter(|candidate| {
+                is_remote_candidate(candidate, identity.member_id(), &local_endpoint)
+            }) {
                 let endpoint = &candidate.endpoint;
                 let result = if observer {
                     client
@@ -346,6 +348,14 @@ fn spawn_discovery(
             tokio::time::sleep(interval).await;
         }
     });
+}
+
+fn is_remote_candidate(
+    candidate: &EndpointRecord,
+    local_member_id: &str,
+    local_endpoint: &str,
+) -> bool {
+    candidate.member_id != local_member_id && candidate.endpoint != local_endpoint
 }
 
 fn tls_config(
@@ -469,4 +479,45 @@ fn endpoints_from_env(
             })
         })
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn candidate(member_id: &str, endpoint: &str) -> EndpointRecord {
+        EndpointRecord {
+            member_id: member_id.into(),
+            endpoint: endpoint.into(),
+            source: DiscoverySource::CurrentManifest,
+            observed_at_epoch_ms: 1,
+        }
+    }
+
+    #[test]
+    fn discovery_excludes_local_member_even_if_its_endpoint_changed() {
+        assert!(!is_remote_candidate(
+            &candidate("local-member", "https://oldlocaladdress.onion:8800"),
+            "local-member",
+            "https://currentlocaladdress.onion:8800",
+        ));
+    }
+
+    #[test]
+    fn discovery_excludes_local_endpoint_with_placeholder_member_id() {
+        assert!(!is_remote_candidate(
+            &candidate("genesis-0", "https://currentlocaladdress.onion:8800"),
+            "local-member",
+            "https://currentlocaladdress.onion:8800",
+        ));
+    }
+
+    #[test]
+    fn discovery_keeps_distinct_remote_candidate() {
+        assert!(is_remote_candidate(
+            &candidate("remote-member", "https://remoteaddress.onion:8800"),
+            "local-member",
+            "https://currentlocaladdress.onion:8800",
+        ));
+    }
 }
