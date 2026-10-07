@@ -1,7 +1,7 @@
 use std::env;
 use std::fs;
 use std::net::SocketAddr;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::thread;
 use std::time::Duration;
@@ -9,7 +9,8 @@ use std::time::Duration;
 use crate::{now_epoch_ms, NodeService};
 use anyhow::{anyhow, Context};
 use kerosene_contracts::{
-    canonical_hash, DiscoveryPlane, GenesisTrustBundleV1, StateSnapshotAttestationV1,
+    canonical_hash, DiscoveryPlane, GenesisTrustBundleV1, MembershipManifestV1,
+    StateSnapshotAttestationV1,
 };
 use kerosene_discovery::{
     validate_onion_endpoint, DiscoverySource, EndpointRecord, PersistentPeerStore,
@@ -47,6 +48,7 @@ struct Config {
     ledger_db_path: PathBuf,
     state_snapshot_attestation: PathBuf,
     state_snapshot_payload: PathBuf,
+    initial_membership_manifest: Option<PathBuf>,
 }
 
 impl Config {
@@ -108,6 +110,10 @@ impl Config {
             state_snapshot_payload: PathBuf::from(required(
                 "KEROSENE_STATE_SNAPSHOT_PAYLOAD_PATH",
             )?),
+            initial_membership_manifest: env::var("KEROSENE_INITIAL_MEMBERSHIP_MANIFEST_PATH")
+                .ok()
+                .filter(|value| !value.trim().is_empty())
+                .map(PathBuf::from),
         })
     }
 }
@@ -155,6 +161,13 @@ pub async fn run() -> anyhow::Result<()> {
         config.peer_live_window_ms,
     )
     .map_err(|error| anyhow!(error))?;
+    if let Some(path) = config.initial_membership_manifest.as_ref() {
+        let manifest: MembershipManifestV1 =
+            read_bounded_json(path, "initial membership manifest")?;
+        service
+            .accept_membership(manifest)
+            .context("validate and persist initial membership manifest")?;
+    }
 
     info!(
         "ledger stores initialized: nonce, accounts, reservations, idempotency, utxos, withdrawals, snapshots, membership"
@@ -393,6 +406,19 @@ fn required(name: &str) -> anyhow::Result<String> {
         .ok_or_else(|| anyhow!("{name} is required"))
 }
 
+fn read_bounded_json<T: serde::de::DeserializeOwned>(
+    path: &Path,
+    label: &str,
+) -> anyhow::Result<T> {
+    const MAX_DOCUMENT_BYTES: u64 = 1024 * 1024;
+    let metadata = fs::symlink_metadata(path).with_context(|| format!("inspect {label}"))?;
+    if !metadata.file_type().is_file() || metadata.len() > MAX_DOCUMENT_BYTES {
+        return Err(anyhow!("{label} must be a bounded regular file"));
+    }
+    let raw = fs::read(path).with_context(|| format!("read {label}"))?;
+    serde_json::from_slice(&raw).with_context(|| format!("parse {label}"))
+}
+
 fn path(name: &str, default: &str) -> PathBuf {
     env::var(name)
         .ok()
@@ -484,6 +510,7 @@ fn endpoints_from_env(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Write;
 
     fn candidate(member_id: &str, endpoint: &str) -> EndpointRecord {
         EndpointRecord {
@@ -519,5 +546,27 @@ mod tests {
             "local-member",
             "https://currentlocaladdress.onion:8800",
         ));
+    }
+
+    #[test]
+    fn bounded_bootstrap_json_rejects_links_and_oversized_files() {
+        let directory = tempfile::tempdir().unwrap();
+        let valid = directory.path().join("manifest.json");
+        fs::write(&valid, br#"{"epoch":1}"#).unwrap();
+        let parsed: serde_json::Value = read_bounded_json(&valid, "manifest").unwrap();
+        assert_eq!(parsed["epoch"], 1);
+
+        let oversized = directory.path().join("oversized.json");
+        let mut file = fs::File::create(&oversized).unwrap();
+        file.write_all(b"{").unwrap();
+        file.set_len(1024 * 1024 + 1).unwrap();
+        assert!(read_bounded_json::<serde_json::Value>(&oversized, "manifest").is_err());
+
+        #[cfg(unix)]
+        {
+            let link = directory.path().join("manifest-link.json");
+            std::os::unix::fs::symlink(&valid, &link).unwrap();
+            assert!(read_bounded_json::<serde_json::Value>(&link, "manifest").is_err());
+        }
     }
 }
