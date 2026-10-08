@@ -9,7 +9,7 @@ use ed25519_dalek::{Signer, SigningKey};
 use kerosene_contracts::{
     canonical_hash, member_id, CanonicalSignable, DiscoveryPlane, GenesisTrustBundleV1,
     ManifestMember, ManifestSignature, MembershipManifestV1, MembershipPhase,
-    DISCOVERY_CONTRACT_VERSION,
+    StateSnapshotAttestationV1, DISCOVERY_CONTRACT_VERSION,
 };
 use kerosene_membership::MembershipVerifier;
 use serde::{Deserialize, Serialize};
@@ -69,6 +69,10 @@ enum Command {
     Membership {
         #[command(subcommand)]
         command: MembershipCommand,
+    },
+    Snapshot {
+        #[command(subcommand)]
+        command: SnapshotCommand,
     },
     Artifact {
         #[command(subcommand)]
@@ -137,6 +141,62 @@ enum MembershipCommand {
     Assemble(AssembleManifest),
     Verify(VerifyManifest),
     Publish(PublishManifest),
+}
+
+#[derive(Subcommand)]
+enum SnapshotCommand {
+    Create(CreateSnapshot),
+    Sign(SignSnapshot),
+    Assemble(AssembleSnapshot),
+    Verify(VerifySnapshot),
+}
+
+#[derive(Args)]
+struct CreateSnapshot {
+    #[arg(long)]
+    manifest: PathBuf,
+    #[arg(long)]
+    payload: PathBuf,
+    #[arg(long)]
+    snapshot_epoch: u64,
+    #[arg(long)]
+    created_at_epoch_ms: u64,
+    #[arg(long)]
+    output: PathBuf,
+}
+
+#[derive(Args)]
+struct SignSnapshot {
+    #[arg(long)]
+    attestation: PathBuf,
+    #[arg(long)]
+    manifest: PathBuf,
+    #[arg(long)]
+    identity: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+}
+
+#[derive(Args)]
+struct AssembleSnapshot {
+    #[arg(long)]
+    attestation: PathBuf,
+    #[arg(long = "signed-attestation", required = true)]
+    signed_attestations: Vec<PathBuf>,
+    #[arg(long)]
+    output: PathBuf,
+}
+
+#[derive(Args)]
+struct VerifySnapshot {
+    #[arg(long)]
+    attestation: PathBuf,
+    #[arg(long)]
+    manifest: PathBuf,
+    #[arg(long)]
+    payload: PathBuf,
+    #[arg(long)]
+    trust_bundle: PathBuf,
 }
 
 #[derive(Args)]
@@ -267,15 +327,23 @@ async fn main() -> Result<()> {
             "Unix-socket administration was removed; use the Vault HTTPS mTLS endpoint through Tor"
         );
     }
-    if identity_pem.is_none() || ca.is_none() || socks5h.is_none() {
+    let needs_network_client = matches!(
+        &cli.command,
+        Command::Node { .. } | Command::Vault { .. } | Command::Quorum { .. } | Command::Doctor
+    );
+    if needs_network_client && (identity_pem.is_none() || ca.is_none() || socks5h.is_none()) {
         bail!("operator identity, CA and socks5h Tor proxy are required");
     }
     let request_id = request_id(cli.request_id.clone());
-    let network_client = admin_client(cli.timeout, identity_pem, ca, socks5h, None)?;
-    let vault_client = network_client.clone();
+    let network_client = needs_network_client
+        .then(|| admin_client(cli.timeout, identity_pem, ca, socks5h, None))
+        .transpose()?;
 
     let value = match cli.command {
         Command::Node { command } => {
+            let network_client = network_client
+                .as_ref()
+                .expect("network client was required");
             let node_endpoint = endpoint(
                 cli.endpoint.as_deref(),
                 "KEROSENE_NODE_ENDPOINT",
@@ -293,11 +361,11 @@ async fn main() -> Result<()> {
                     } else {
                         "/v1/membership/current"
                     };
-                    get_json(&network_client, &node_endpoint, path, &request_id).await?
+                    get_json(network_client, &node_endpoint, path, &request_id).await?
                 }
                 NodeCommand::Peers => {
                     get_json(
-                        &network_client,
+                        network_client,
                         &node_endpoint,
                         "/v1/discovery/peers",
                         &request_id,
@@ -307,6 +375,9 @@ async fn main() -> Result<()> {
             }
         }
         Command::Vault { command } => {
+            let vault_client = network_client
+                .as_ref()
+                .expect("network client was required");
             let endpoint = endpoint(
                 cli.endpoint.as_deref(),
                 "KEROSENE_VAULT_ENDPOINT",
@@ -316,19 +387,22 @@ async fn main() -> Result<()> {
             )?;
             match command {
                 VaultCommand::Status => {
-                    get_json(&vault_client, &endpoint, "/v1/admin/status", &request_id).await?
+                    get_json(vault_client, &endpoint, "/v1/admin/status", &request_id).await?
                 }
                 VaultCommand::Health => {
-                    get_json(&vault_client, &endpoint, "/v1/health", &request_id).await?
+                    get_json(vault_client, &endpoint, "/v1/health", &request_id).await?
                 }
                 VaultCommand::Ceremony {
                     command: CeremonyCommand::Inspect,
-                } => get_json(&vault_client, &endpoint, "/v1/admin/ceremony", &request_id).await?,
+                } => get_json(vault_client, &endpoint, "/v1/admin/ceremony", &request_id).await?,
             }
         }
         Command::Quorum {
             command: QuorumCommand::Status,
         } => {
+            let network_client = network_client
+                .as_ref()
+                .expect("network client was required");
             let endpoint = endpoint(
                 cli.endpoint.as_deref(),
                 "KEROSENE_NODE_ENDPOINT",
@@ -336,7 +410,7 @@ async fn main() -> Result<()> {
                     .as_ref()
                     .and_then(|value| value.node_endpoint.as_deref()),
             )?;
-            get_json(&network_client, &endpoint, "/v1/readiness", &request_id).await?
+            get_json(network_client, &endpoint, "/v1/readiness", &request_id).await?
         }
         Command::Compatibility {
             command: CompatibilityCommand::Check,
@@ -349,7 +423,12 @@ async fn main() -> Result<()> {
             command: ArtifactCommand::Verify { path, sha256 },
         } => artifact_verify(&path, sha256.as_deref())?,
         Command::Membership { command } => membership(command).await?,
+        Command::Snapshot { command } => snapshot(command)?,
         Command::Doctor => {
+            let network_client = network_client
+                .as_ref()
+                .expect("network client was required");
+            let vault_client = network_client;
             let node_endpoint = endpoint(
                 cli.endpoint.as_deref(),
                 "KEROSENE_NODE_ENDPOINT",
@@ -357,14 +436,9 @@ async fn main() -> Result<()> {
                     .as_ref()
                     .and_then(|value| value.node_endpoint.as_deref()),
             )?;
-            let live = get_json(&network_client, &node_endpoint, "/live", &request_id).await?;
-            let readiness = get_json(
-                &network_client,
-                &node_endpoint,
-                "/v1/readiness",
-                &request_id,
-            )
-            .await?;
+            let live = get_json(network_client, &node_endpoint, "/live", &request_id).await?;
+            let readiness =
+                get_json(network_client, &node_endpoint, "/v1/readiness", &request_id).await?;
             let vault = if profile
                 .as_ref()
                 .and_then(|value| value.vault_endpoint.as_ref())
@@ -379,7 +453,7 @@ async fn main() -> Result<()> {
                 )?;
                 Some(
                     get_json(
-                        &vault_client,
+                        vault_client,
                         &vault_endpoint,
                         "/v1/admin/status",
                         &request_id,
@@ -393,6 +467,102 @@ async fn main() -> Result<()> {
         }
     };
     print_value(cli.output, &value)
+}
+
+fn snapshot(command: SnapshotCommand) -> Result<Value> {
+    match command {
+        SnapshotCommand::Create(args) => {
+            if args.snapshot_epoch == 0 || args.created_at_epoch_ms == 0 {
+                bail!("snapshot epoch and creation time must be nonzero");
+            }
+            let manifest: MembershipManifestV1 = read_json(&args.manifest)?;
+            let payload = fs::read(&args.payload)?;
+            let membership_manifest_hash = canonical_hash(&manifest);
+            let attestation = StateSnapshotAttestationV1 {
+                contract_version: DISCOVERY_CONTRACT_VERSION.into(),
+                network_id: manifest.network_id,
+                plane: manifest.plane,
+                membership_manifest_hash,
+                snapshot_epoch: args.snapshot_epoch,
+                state_root: hex::encode(Sha256::digest(payload)),
+                created_at_epoch_ms: args.created_at_epoch_ms,
+                signatures: Vec::new(),
+            };
+            write_private_json(&args.output, &attestation)?;
+            Ok(
+                json!({"created": true, "attestation_hash": canonical_hash(&attestation), "path": args.output}),
+            )
+        }
+        SnapshotCommand::Sign(args) => {
+            let mut attestation: StateSnapshotAttestationV1 = read_json(&args.attestation)?;
+            let manifest: MembershipManifestV1 = read_json(&args.manifest)?;
+            if attestation.network_id != manifest.network_id
+                || attestation.plane != manifest.plane
+                || attestation.membership_manifest_hash != canonical_hash(&manifest)
+            {
+                bail!("snapshot attestation is not bound to the membership manifest");
+            }
+            let secret = read_secret(&args.identity)?;
+            let key = SigningKey::from_bytes(&secret);
+            let signer_id = member_id(&manifest.network_id, key.verifying_key().as_bytes());
+            if !manifest
+                .members
+                .iter()
+                .any(|member| member.member_id == signer_id)
+            {
+                bail!("signing identity is absent from the membership roster");
+            }
+            attestation
+                .signatures
+                .retain(|signature| signature.signer_id != signer_id);
+            attestation.signatures.push(ManifestSignature {
+                signer_id,
+                signature: hex::encode(key.sign(&attestation.signing_bytes()).to_bytes()),
+            });
+            write_private_json(&args.output, &attestation)?;
+            Ok(
+                json!({"signed": true, "attestation_hash": canonical_hash(&attestation), "path": args.output}),
+            )
+        }
+        SnapshotCommand::Assemble(args) => {
+            let mut attestation: StateSnapshotAttestationV1 = read_json(&args.attestation)?;
+            let expected = attestation.signing_bytes();
+            for path in args.signed_attestations {
+                let signed: StateSnapshotAttestationV1 = read_json(&path)?;
+                if signed.signing_bytes() != expected {
+                    bail!(
+                        "signed attestation {} does not describe the same snapshot",
+                        path.display()
+                    );
+                }
+                for signature in signed.signatures {
+                    attestation
+                        .signatures
+                        .retain(|existing| existing.signer_id != signature.signer_id);
+                    attestation.signatures.push(signature);
+                }
+            }
+            attestation
+                .signatures
+                .sort_by(|left, right| left.signer_id.cmp(&right.signer_id));
+            write_private_json(&args.output, &attestation)?;
+            Ok(
+                json!({"assembled": true, "signature_count": attestation.signatures.len(), "attestation_hash": canonical_hash(&attestation), "path": args.output}),
+            )
+        }
+        SnapshotCommand::Verify(args) => {
+            let attestation: StateSnapshotAttestationV1 = read_json(&args.attestation)?;
+            let manifest: MembershipManifestV1 = read_json(&args.manifest)?;
+            let bundle: GenesisTrustBundleV1 = read_json(&args.trust_bundle)?;
+            if attestation.state_root != hex::encode(Sha256::digest(fs::read(&args.payload)?)) {
+                bail!("snapshot payload digest differs from the attestation");
+            }
+            let mut verifier = MembershipVerifier::new(&bundle, manifest.plane)?;
+            verifier.accept(manifest)?;
+            verifier.verify_state_snapshot_attestation(&attestation)?;
+            Ok(json!({"valid": true, "attestation_hash": canonical_hash(&attestation)}))
+        }
+    }
 }
 
 async fn membership(command: MembershipCommand) -> Result<Value> {
@@ -667,6 +837,7 @@ fn print_value(output: Output, value: &Value) -> Result<()> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use kerosene_contracts::{TrustMember, TrustPlane};
 
     #[test]
     fn artifact_digest_is_verified() {
@@ -690,5 +861,114 @@ mod tests {
         fs::set_permissions(&path, fs::Permissions::from_mode(0o640)).unwrap();
 
         assert!(read_secret(&path).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn snapshot_ceremony_creates_signs_assembles_and_verifies() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = tempfile::tempdir().unwrap();
+        let keys = [
+            SigningKey::from_bytes(&[1; 32]),
+            SigningKey::from_bytes(&[2; 32]),
+        ];
+        let members = keys
+            .iter()
+            .enumerate()
+            .map(|(index, key)| ManifestMember {
+                member_id: member_id("testnet", key.verifying_key().as_bytes()),
+                root_public_key: hex::encode(key.verifying_key().as_bytes()),
+                endpoint: format!(
+                    "https://{}.onion:8800",
+                    if index == 0 { "a" } else { "b" }.repeat(56)
+                ),
+            })
+            .collect::<Vec<_>>();
+        let mut manifest = MembershipManifestV1 {
+            contract_version: DISCOVERY_CONTRACT_VERSION.into(),
+            network_id: "testnet".into(),
+            plane: DiscoveryPlane::Bank,
+            epoch: 1,
+            phase: MembershipPhase::Stable,
+            previous_manifest_hash: "0".repeat(64),
+            threshold: 2,
+            members: members.clone(),
+            next_epoch: None,
+            signatures: Vec::new(),
+        };
+        manifest.signatures = keys
+            .iter()
+            .map(|key| ManifestSignature {
+                signer_id: member_id("testnet", key.verifying_key().as_bytes()),
+                signature: hex::encode(key.sign(&manifest.signing_bytes()).to_bytes()),
+            })
+            .collect();
+        let trust_members = members
+            .iter()
+            .map(|member| TrustMember {
+                member_id: member.member_id.clone(),
+                root_public_key: member.root_public_key.clone(),
+            })
+            .collect::<Vec<_>>();
+        let bundle = GenesisTrustBundleV1 {
+            contract_version: DISCOVERY_CONTRACT_VERSION.into(),
+            network_id: "testnet".into(),
+            bank: TrustPlane {
+                threshold: 2,
+                members: trust_members.clone(),
+            },
+            vault: TrustPlane {
+                threshold: 2,
+                members: trust_members,
+            },
+            created_at_epoch_ms: 1,
+        };
+        let manifest_path = directory.path().join("manifest.json");
+        let bundle_path = directory.path().join("genesis.json");
+        let payload_path = directory.path().join("snapshot.bin");
+        fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        fs::write(&bundle_path, serde_json::to_vec(&bundle).unwrap()).unwrap();
+        fs::write(&payload_path, b"initial-state").unwrap();
+
+        let unsigned = directory.path().join("unsigned.json");
+        snapshot(SnapshotCommand::Create(CreateSnapshot {
+            manifest: manifest_path.clone(),
+            payload: payload_path.clone(),
+            snapshot_epoch: 1,
+            created_at_epoch_ms: 1,
+            output: unsigned.clone(),
+        }))
+        .unwrap();
+        let mut signed = Vec::new();
+        for (index, key) in keys.iter().enumerate() {
+            let identity = directory.path().join(format!("identity-{index}"));
+            fs::write(&identity, hex::encode(key.to_bytes())).unwrap();
+            fs::set_permissions(&identity, fs::Permissions::from_mode(0o600)).unwrap();
+            let output = directory.path().join(format!("signed-{index}.json"));
+            snapshot(SnapshotCommand::Sign(SignSnapshot {
+                attestation: unsigned.clone(),
+                manifest: manifest_path.clone(),
+                identity,
+                output: output.clone(),
+            }))
+            .unwrap();
+            signed.push(output);
+        }
+        let assembled = directory.path().join("assembled.json");
+        snapshot(SnapshotCommand::Assemble(AssembleSnapshot {
+            attestation: unsigned,
+            signed_attestations: signed,
+            output: assembled.clone(),
+        }))
+        .unwrap();
+        let result = snapshot(SnapshotCommand::Verify(VerifySnapshot {
+            attestation: assembled,
+            manifest: manifest_path,
+            payload: payload_path,
+            trust_bundle: bundle_path,
+        }))
+        .unwrap();
+        assert_eq!(result["valid"], true);
     }
 }

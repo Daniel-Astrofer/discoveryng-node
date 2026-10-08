@@ -113,8 +113,11 @@ Compact documentation:
 
 `kerosene-rsctl` provides read-only health, peers, membership, quorum,
 compatibility and artifact diagnostics. It also supports an offline
-create/sign/verify/publish membership ceremony. Private identity files must be
+create/sign/assemble/verify membership and state-snapshot ceremony. Private identity files must be
 mode `0600`; secrets are never accepted as inline command arguments.
+Offline membership, snapshot and artifact commands do not require an operator
+profile, mTLS identity or Tor proxy. Network diagnostics still require all
+three and fail closed when any is absent.
 
 Profiles are loaded from `~/.config/kerosene/profiles.toml`, or from the path in
 `KEROSENE_PROFILES_FILE`. They contain endpoints and credential file references,
@@ -129,4 +132,17 @@ cargo run -p kerosene-rsctl -- node status \
   --endpoint https://example.onion:8800 --output json-pretty
 cargo run -p kerosene-rsctl -- membership verify \
   --manifest signed.json --trust-bundle genesis.json
+cargo run -p kerosene-rsctl -- snapshot create \
+  --manifest signed.json --payload state.bin --snapshot-epoch 1 \
+  --created-at-epoch-ms 1760000000000 --output snapshot-unsigned.json
+cargo run -p kerosene-rsctl -- snapshot sign \
+  --attestation snapshot-unsigned.json --manifest signed.json \
+  --identity member-1.key --output snapshot-member-1.json
+cargo run -p kerosene-rsctl -- snapshot assemble \
+  --attestation snapshot-unsigned.json \
+  --signed-attestation snapshot-member-1.json \
+  --signed-attestation snapshot-member-2.json --output snapshot-signed.json
+cargo run -p kerosene-rsctl -- snapshot verify \
+  --attestation snapshot-signed.json --manifest signed.json \
+  --payload state.bin --trust-bundle genesis.json
 ```
