@@ -13,11 +13,6 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  compatibility:
-    uses: Daniel-Astrofer/.github/.github/workflows/compatibility-ci.yml@2552ff2125c2d72accebe93804b8e139a52ded13
-    with:
-      component: node
-
   rust:
     uses: Daniel-Astrofer/.github/.github/workflows/rust-ci.yml@2552ff2125c2d72accebe93804b8e139a52ded13
     with:
