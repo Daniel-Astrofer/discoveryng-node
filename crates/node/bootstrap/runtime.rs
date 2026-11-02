@@ -206,10 +206,15 @@ pub async fn run() -> anyhow::Result<()> {
     }
 
     let observer = super::release_observer::from_env(
-        config.plane, &config.network_id, config.tls_client_identity.as_ref(),
-        &config.tls_client_ca, &config.socks_proxy,
+        config.plane,
+        &config.network_id,
+        config.tls_client_identity.as_ref(),
+        &config.tls_client_ca,
+        &config.socks_proxy,
     )?;
-    let router = service.router().merge(crate::api::release_observer::router(observer));
+    let router = service
+        .router()
+        .merge(crate::api::release_observer::router(observer));
     let tls = tls_config(&config.tls_cert, &config.tls_key, &config.tls_client_ca)?;
     info!(
         plane = ?config.plane,
