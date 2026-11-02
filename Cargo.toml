@@ -1,12 +1,13 @@
 [workspace]
 members = [
-  "crates/kerosene-identity-core",
-  "crates/kerosene-membership",
-  "crates/kerosene-discovery",
-  "crates/kerosene-sync",
-  "crates/kerosene-node",
-  "crates/kerosene-rsctl",
-  "crates/kerosene-ledger",
+  "crates/identity",
+  "crates/membership",
+  "crates/discovery",
+  "crates/sync",
+  "crates/node",
+  "crates/rsctl",
+  "crates/ledger",
+  "crates/release-observer",
 ]
 exclude = ["fuzz"]
 resolver = "2"
@@ -25,7 +26,7 @@ axum-server = { version = "0.8", features = ["tls-rustls"] }
 clap = { version = "4", features = ["derive"] }
 ed25519-dalek = { version = "2", features = ["rand_core", "digest", "pkcs8"] }
 hex = "0.4"
-kerosene-contracts = { git = "https://github.com/Daniel-Astrofer/kerosene-contracts.git", rev = "f1f85c0996a6a24965f67eec52d649e5daa15f15" }
+kerosene-contracts = { git = "https://github.com/Daniel-Astrofer/contracts.git", rev = "6eb4e289235743845d0d425d093f3ca3d59645b7", version = "=0.3.0" }
 parking_lot = "0.12"
 rand = "0.8"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls", "socks"] }

@@ -1,0 +1,51 @@
+[package]
+name = "kerosene-node"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+
+[features]
+default = []
+production = [
+  "kerosene-contracts/production",
+  "kerosene-discovery/production",
+  "kerosene-identity-core/production",
+  "kerosene-membership/production",
+  "kerosene-sync/production",
+]
+
+[dependencies]
+ed25519-dalek.workspace = true
+anyhow.workspace = true
+axum.workspace = true
+axum-server.workspace = true
+hex.workspace = true
+kerosene-contracts.workspace = true
+kerosene-release-observer = { path = "../release-observer" }
+zeroize.workspace = true
+kerosene-discovery = { path = "../discovery" }
+kerosene-identity-core = { path = "../identity" }
+kerosene-membership = { path = "../membership" }
+kerosene-sync = { path = "../sync" }
+parking_lot.workspace = true
+rustls.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+thiserror.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+
+[dev-dependencies]
+tower.workspace = true
+ed25519-dalek.workspace = true
+sha2.workspace = true
+tempfile.workspace = true
+
+[lib]
+path = "lib.rs"
+
+[[bin]]
+name = "kerosene-node"
+path = "main.rs"
